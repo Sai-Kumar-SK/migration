@@ -1,0 +1,11 @@
+# Sample repository list for Gradle migration
+# Add your repository URLs here, one per line
+# Lines starting with # are ignored
+
+# Example repositories - replace with your actual repositories
+git@github.com:your-org/sample-project-1.git
+git@github.com:your-org/sample-project-2.git
+git@github.com:your-org/sample-project-3.git
+
+# Add more repositories as needed
+# git@github.com:your-org/another-project.git
