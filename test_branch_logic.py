@@ -46,7 +46,7 @@ rootProject.name = 'test-project'
         buildsrc_dir.mkdir(parents=True, exist_ok=True)
         
         # Copy the plugin template
-        plugin_file = Path('templates/artifactory-publishing.gradle')
+        plugin_file = Path('templates/artifactory-publishing-enhanced.gradle')
         if plugin_file.exists():
             plugin_content = plugin_file.read_text()
             (buildsrc_dir / 'ArtifactoryPublishingPlugin.gradle').write_text(plugin_content)

@@ -23,11 +23,11 @@ def test_branch_detection():
         
         # Test different branches
         test_cases = [
-            ('master', 'libs-release'),
-            ('main', 'libs-release'),
-            ('develop', 'libs-snapshot'),
-            ('feature/test', 'libs-snapshot'),
-            ('release/1.0', 'libs-snapshot')
+            ('master', 'releases'),
+            ('main', 'releases'),
+            ('develop', 'snapshots'),
+            ('feature/test', 'snapshots'),
+            ('release/1.0', 'snapshots')
         ]
         
         print("Testing git branch detection:")
@@ -47,9 +47,9 @@ def test_branch_detection():
                     
                     # Apply the same logic as the plugin
                     if current_branch == 'master' or current_branch == 'main':
-                        target_repo = 'libs-release'
+                        target_repo = 'releases'
                     else:
-                        target_repo = 'libs-snapshot'
+                        target_repo = 'snapshots'
                     
                     if target_repo == expected_repo:
                         print(f"✅ {branch} -> {expected_repo} (Correct)")
@@ -66,7 +66,7 @@ def test_branch_detection():
 def test_plugin_content():
     """Test the plugin content for correct logic"""
     
-    plugin_file = Path('templates/artifactory-publishing.gradle')
+    plugin_file = Path('templates/artifactory-publishing-enhanced.gradle')
     if not plugin_file.exists():
         print("❌ Plugin template not found")
         return

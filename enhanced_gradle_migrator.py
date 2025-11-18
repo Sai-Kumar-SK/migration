@@ -66,14 +66,20 @@ class EnhancedGradleArtifactoryMigrator:
         self.logger = logging.getLogger(__name__)
     
     def load_templates(self):
-        """Load plugin templates"""
-        template_dir = Path(__file__).parent / "templates"
-        
-        if self.use_enhanced_plugin:
-            self.plugin_template_path = template_dir / "artifactory-publishing-enhanced.gradle"
+        """Load plugin and Jenkinsfile templates.
+        Prefer a repository-provided `artifactory.gradle` if present; otherwise use the enhanced template.
+        """
+        base_dir = Path(__file__).parent
+        template_dir = base_dir / "templates"
+
+        # Prefer root-level artifactory.gradle provided by user
+        repo_plugin = base_dir / "artifactory.gradle"
+        if repo_plugin.exists():
+            self.plugin_template_path = repo_plugin
         else:
-            self.plugin_template_path = template_dir / "artifactory-publishing.gradle"
-        
+            self.plugin_template_path = template_dir / "artifactory-publishing-enhanced.gradle"
+
+        # Always use enhanced Jenkinsfile template
         self.jenkinsfile_template_path = template_dir / "Jenkinsfile.enhanced"
     
     def clone_repository(self, repo_url: str, work_dir: Path) -> Tuple[bool, str]:
@@ -130,11 +136,12 @@ class EnhancedGradleArtifactoryMigrator:
             # Run migration workflow
             migration_results = workflow.run_migration_workflow(str(self.plugin_template_path))
             
-            if migration_results.get('is_gradle_platform'):
+            platform_detected = migration_results.get('is_gradle_platform') or (Path(work_dir) / 'gradle' / 'libs.versions.toml').exists()
+            if platform_detected:
                 return MigrationResult(
                     repo_url=str(work_dir),
-                    success=False,
-                    message="Gradle Platform detected - manual intervention required",
+                    success=migration_results.get('success', False),
+                    message="Gradle Platform migration completed" if migration_results.get('success', False) else "Gradle Platform migration failed",
                     changes=[],
                     gradle_platform_detected=True,
                     migration_details=migration_results
@@ -343,8 +350,6 @@ def main():
                        help='Output report file')
     parser.add_argument('--use-legacy-migration', action='store_true',
                        help='Use legacy migration method instead of comprehensive workflow')
-    parser.add_argument('--use-enhanced-plugin', action='store_true', default=True,
-                       help='Use enhanced plugin template (default: True)')
     
     args = parser.parse_args()
     
@@ -374,8 +379,7 @@ def main():
         artifactory_url=args.artifactory_url,
         artifactory_repo_key=args.artifactory_repo_key,
         max_workers=args.max_workers,
-        temp_dir=args.temp_dir,
-        use_enhanced_plugin=args.use_enhanced_plugin
+        temp_dir=args.temp_dir
     )
     
     # Run migrations

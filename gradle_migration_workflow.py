@@ -18,6 +18,7 @@ class GradleMigrationWorkflow:
         self.parser = GradleProjectParser(project_root)
         self.nexus_remover = NexusRemover()
         self.hzpublish_setup = HzPublishSetup(project_root)
+        self.jenkinsfile_template_path = Path(__file__).parent / "templates" / "Jenkinsfile.enhanced"
         
     def run_migration_workflow(self, enhanced_plugin_path: str) -> Dict:
         """Run the complete migration workflow.
@@ -61,7 +62,7 @@ class GradleMigrationWorkflow:
         
         # Step 6: Complete migration with Jenkinsfile operations
         print("\n=== Step 6: Completing migration with Jenkinsfile operations ===")
-        completion_results = self._complete_migration(enhanced_plugin_path)
+        completion_results = self._complete_migration()
         
         # Compile results
         results = {
@@ -80,10 +81,10 @@ class GradleMigrationWorkflow:
         
         return results
     
-    def _complete_migration(self, enhanced_plugin_path: str) -> Dict:
+    def _complete_migration(self) -> Dict:
         """Complete migration with Jenkinsfile operations for standard Gradle projects."""
         try:
-            migration_manager = CompleteMigrationManager(str(self.project_root), enhanced_plugin_path)
+            migration_manager = CompleteMigrationManager(str(self.project_root), str(self.jenkinsfile_template_path))
             complete_results = migration_manager.complete_standard_gradle_migration()
             
             return {
@@ -114,7 +115,7 @@ class GradleMigrationWorkflow:
                 }
             
             # Complete the migration with Jenkinsfile operations
-            migration_manager = CompleteMigrationManager(str(self.project_root), enhanced_plugin_path)
+            migration_manager = CompleteMigrationManager(str(self.project_root), str(self.jenkinsfile_template_path))
             complete_results = migration_manager.complete_gradle_platform_migration()
             
             return {
@@ -308,7 +309,8 @@ class GradleMigrationWorkflow:
         # Overall success
         if completion_results:
             summary['jenkinsfile_replaced'] = completion_results.get('success', False)
-            summary['jenkinsfile_cleanup'] = completion_results.get('jenkinsfile_cleanup', {}).get('success', False)
+            jc = completion_results.get('jenkinsfile_cleanup') or {}
+            summary['jenkinsfile_cleanup'] = jc.get('success', False)
             
             summary['overall_success'] = all([
                 summary['project_analyzed'],

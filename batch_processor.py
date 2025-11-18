@@ -47,15 +47,11 @@ def process_batch(repos: List[str], batch_size: int, artifactory_config: dict,
         
         # Run migration for this batch
         cmd = [
-            sys.executable, 'gradle_artifactory_migrator.py',
-            '--repos-file', batch_file,
+            sys.executable, 'enhanced_gradle_migrator.py',
+            '--git-file', batch_file,
             '--commit-message', commit_message,
-            '--artifactory-url', artifactory_config['url'],
-            '--artifactory-repo-key', artifactory_config['repo_key'],
-            '--artifactory-username', artifactory_config['username'],
-            '--artifactory-password', artifactory_config['password'],
             '--max-workers', str(min(batch_size, 20)),
-            '--report-file', f'batch_{batch_num}_report.txt'
+            '--report-file', f'batch_{batch_num}_report.md'
         ]
         
         try:
@@ -75,28 +71,14 @@ def process_batch(repos: List[str], batch_size: int, artifactory_config: dict,
         # Wait between batches (except for the last batch)
         if i + batch_size < total_repos:
             print(f"Waiting {delay_between_batches} seconds before next batch...")
-            time.sleep(delay_between_seconds)
+            time.sleep(delay_between_batches)
 
 def load_artifactory_config() -> dict:
-    """Load Artifactory configuration from environment or config file"""
-    config = {
+    """Load optional Artifactory configuration (currently not required)."""
+    return {
         'url': os.getenv('ARTIFACTORY_URL'),
-        'repo_key': os.getenv('ARTIFACTORY_REPO_KEY'),
-        'username': os.getenv('ARTIFACTORY_USERNAME'),
-        'password': os.getenv('ARTIFACTORY_PASSWORD')
+        'repo_key': os.getenv('ARTIFACTORY_REPO_KEY')
     }
-    
-    # Check if all required config is present
-    if not all(config.values()):
-        print("Error: Missing Artifactory configuration")
-        print("Please set the following environment variables:")
-        print("- ARTIFACTORY_URL")
-        print("- ARTIFACTORY_REPO_KEY")
-        print("- ARTIFACTORY_USERNAME")
-        print("- ARTIFACTORY_PASSWORD")
-        sys.exit(1)
-    
-    return config
 
 def main():
     """Main function"""
@@ -113,7 +95,7 @@ def main():
     repos = load_repositories_from_file(repos_file)
     print(f"Loaded {len(repos)} repositories from {repos_file}")
     
-    # Load Artifactory configuration
+    # Optional: Load Artifactory configuration (not required)
     artifactory_config = load_artifactory_config()
     
     # Process in batches
