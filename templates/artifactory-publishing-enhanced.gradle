@@ -1,0 +1,176 @@
+import org.gradle.api.Plugin
+import org.gradle.api.Project
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+
+class ArtifactoryPublishingPlugin implements Plugin<Project> {
+    void apply(Project project) {
+        // Apply required plugins
+        project.plugins.apply('maven-publish')
+        project.plugins.apply('com.jfrog.artifactory')
+        
+        // Configure project extensions (similar to your existing ext block)
+        project.ext {
+            String releaseBranches = project.findProperty("GIT_RELEASE_BRANCHES") ?: "origin/master,master,origin/main,main"
+            branchName = (project.findProperty("GIT_BRANCH") ?: System.env.GIT_BRANCH) ?: gitBranch()
+            isReleaseBranch = releaseBranches.split(',').contains(branchName)
+            gitUrl = (project.findProperty("GIT_URL") ?: System.env.GIT_URL) ?: gitUrlFromGit()
+            buildUrl = project.findProperty("BUILD_URL") ?: System.env.BUILD_URL
+            gitCommit = project.findProperty("GIT_COMMIT") ?: System.env.GIT_COMMIT
+            
+            // Parse organization and repository from git URL
+            def matcher = (gitUrl =~ ".*?(?<spk>[\\w_-]+)/(?<repo>[\\w_-]+)\\.git")
+            if(matcher.matches()) {
+                spk = matcher.group("spk")
+                repo = matcher.group("repo")
+            }
+            
+            // Determine repository name based on branch
+            artifactoryRepoName = isReleaseBranch ? "releases" : "snapshots"
+            
+            // Artifactory configuration with fallback to environment variables
+            artifactory_contextUrl = project.findProperty("artifactory_contextUrl") ?: 
+                                     project.findProperty("artifactory.url") ?: 
+                                     System.getenv("ARTIFACTORY_URL") ?: 
+                                     "https://artifactory.org.com/artifactory"
+                                     
+            artifactory_user = project.findProperty("artifactory_user") ?: 
+                              project.findProperty("artifactory.username") ?: 
+                              System.getenv("ARTIFACTORY_USERNAME") ?: 
+                              System.getProperty("gradle.wrapperUser")
+                              
+            artifactory_password = project.findProperty("artifactory_password") ?: 
+                                  project.findProperty("artifactory.password") ?: 
+                                  System.getenv("ARTIFACTORY_PASSWORD") ?: 
+                                  System.getProperty("gradle.wrapperPassword")
+        }
+        
+        // Disable module metadata generation (from your existing config)
+        project.tasks.withType(GenerateModuleMetadata) {
+            enabled = false
+        }
+        
+        // Configure publishing
+        project.afterEvaluate {
+            if (!project.ext.artifactory_contextUrl || !project.ext.artifactory_user || !project.ext.artifactory_password) {
+                project.logger.warn("Artifactory configuration incomplete. Please provide all required properties.")
+                return
+            }
+            
+            project.publishing {
+                publications {
+                    mavenJava(MavenPublication) { p ->
+                        versionMapping {
+                            allVariants {
+                                fromResolutionResult()
+                            }
+                        }
+                        
+                        from components.java
+                        
+                        // Use custom artifactId if provided
+                        if(project.ext.has("artifactId")) {
+                            artifactId = project.artifactId
+                        } else {
+                            artifactId = project.name
+                        }
+                        
+                        groupId = project.group
+                        version = project.version
+                        
+                        pom {
+                            name = project.name
+                            description = project.description ?: "${project.name} library"
+                            url = project.findProperty('project.url') ?: "https://github.com/${project.ext.spk}/${project.ext.repo}"
+                            
+                            licenses {
+                                license {
+                                    name = project.findProperty('license.name') ?: 'The Apache License, Version 2.0'
+                                    url = project.findProperty('license.url') ?: 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                                }
+                            }
+                            
+                            developers {
+                                developer {
+                                    id = project.findProperty('developer.id') ?: project.ext.spk
+                                    name = project.findProperty('developer.name') ?: project.ext.spk
+                                    email = project.findProperty('developer.email') ?: "dev@${project.ext.spk}.com"
+                                }
+                            }
+                            
+                            scm {
+                                connection = project.ext.gitUrl
+                                developerConnection = project.ext.gitUrl
+                                url = project.ext.buildUrl ?: "https://github.com/${project.ext.spk}/${project.ext.repo}"
+                                tag = project.ext.gitCommit
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Configure Artifactory plugin
+            project.artifactory {
+                contextUrl = project.ext.artifactory_contextUrl
+                publish {
+                    repository {
+                        repoKey = project.ext.artifactoryRepoName
+                        username = project.ext.artifactory_user
+                        password = project.ext.artifactory_password
+                    }
+                    defaults {
+                        publications('maven', 'mavenJava', 'ivyJava')
+                        publishArtifacts = true
+                        publishPom = true
+                    }
+                }
+            }
+            
+            project.logger.lifecycle("Publishing (group: ${project.group} to url: ${project.ext.artifactory_contextUrl}/${project.ext.artifactoryRepoName}/)")
+            project.logger.lifecycle("Current branch: ${project.ext.branchName}, Target repository: ${project.ext.artifactoryRepoName}")
+        }
+        
+        // Register beforeArtifactoryPublish task (from your existing config)
+        project.tasks.register("beforeArtifactoryPublish") {
+            dependsOn("publishingSetup")
+            doLast {
+                warnIfPropertyIsNull(project, "artifactory_contextUrl")
+                warnIfPropertyIsNull(project, "artifactory_user")
+                warnIfPropertyIsNull(project, "artifactory_password")
+                project.logger.lifecycle("Publishing (group: ${project.group} to a url: ${project.ext.artifactory_contextUrl}/${project.ext.artifactoryRepoName}/)")
+            }
+        }
+        
+        project.tasks.named("artifactoryPublish") {
+            dependsOn("beforeArtifactoryPublish")
+        }
+    }
+    
+    private String gitBranch() {
+        return gitCmd("git rev-parse --abbrev-ref HEAD")
+    }
+    
+    private String gitUrlFromGit() {
+        return gitCmd("git ls-remote --get-url origin")
+    }
+    
+    private String gitCmd(String cmd) {
+        def result = ""
+        def proc = cmd.execute()
+        try {
+            proc.in.eachLine { line -> result = line }
+            proc.err.eachLine { line -> println line }
+            proc.waitFor()
+            return result
+        } catch (Throwable t) {
+            return "NA"
+        }
+    }
+    
+    private void warnIfPropertyIsNull(Project project, String propName) {
+        if(project.property(propName) == null) {
+            project.logger.lifecycle("Property $propName is null. Please set it in the build script.")
+        }
+    }
+}

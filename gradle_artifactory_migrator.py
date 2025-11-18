@@ -34,21 +34,25 @@ class GradleArtifactoryMigrator:
     
     def __init__(self, artifactory_url: str, artifactory_repo_key: str, 
                  artifactory_username: str, artifactory_password: str,
-                 max_workers: int = 10, temp_dir: Optional[str] = None):
+                 max_workers: int = 10, temp_dir: Optional[str] = None,
+                 use_enhanced_plugin: bool = True):
         self.artifactory_url = artifactory_url
         self.artifactory_repo_key = artifactory_repo_key
         self.artifactory_username = artifactory_username
         self.artifactory_password = artifactory_password
         self.max_workers = max_workers
         self.temp_dir = temp_dir or tempfile.gettempdir()
+        self.use_enhanced_plugin = use_enhanced_plugin
         
         # Setup logging
         self.setup_logging()
         
         # Load templates
         self.templates_dir = Path(__file__).parent / 'templates'
-        self.plugin_template = self.load_template('artifactory-publishing.gradle')
-        self.jenkinsfile_template = self.load_template('Jenkinsfile.artifactory')
+        plugin_template_name = 'artifactory-publishing-enhanced.gradle' if use_enhanced_plugin else 'artifactory-publishing.gradle'
+        jenkinsfile_template_name = 'Jenkinsfile.enhanced' if use_enhanced_plugin else 'Jenkinsfile.artifactory'
+        self.plugin_template = self.load_template(plugin_template_name)
+        self.jenkinsfile_template = self.load_template(jenkinsfile_template_name)
         
     def setup_logging(self):
         """Setup logging configuration"""
@@ -230,8 +234,53 @@ dependencies {
         try:
             settings_files = list(work_dir.rglob('settings.gradle*'))
             
-            # Separate configuration for dependency resolution and plugin management
-            artifactory_config = f"""
+            if self.use_enhanced_plugin:
+                # Enhanced plugin configuration - uses existing artifactory.gradle logic
+                artifactory_config = f"""
+pluginManagement {{
+    repositories {{
+        maven {{
+            url '{self.artifactory_url}/releases'
+            credentials {{
+                username = '{self.artifactory_username}'
+                password = '{self.artifactory_password}'
+            }}
+        }}
+        maven {{
+            url '{self.artifactory_url}/snapshots'
+            credentials {{
+                username = '{self.artifactory_username}'
+                password = '{self.artifactory_password}'
+            }}
+        }}
+        gradlePluginPortal()
+    }}
+}}
+
+dependencyResolutionManagement {{
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {{
+        maven {{
+            url '{self.artifactory_url}/releases'
+            credentials {{
+                username = '{self.artifactory_username}'
+                password = '{self.artifactory_password}'
+            }}
+        }}
+        maven {{
+            url '{self.artifactory_url}/snapshots'
+            credentials {{
+                username = '{self.artifactory_username}'
+                password = '{self.artifactory_password}'
+            }}
+        }}
+        mavenCentral()
+    }}
+}}
+"""
+            else:
+                # Original plugin configuration
+                artifactory_config = f"""
 pluginManagement {{
     repositories {{
         maven {{
@@ -308,3 +357,67 @@ dependencyResolutionManagement {{
             
         except Exception as e:
             return False, f"Error updating build.gradle files: {str(e)}", changes
+
+def main():
+    """Main function"""
+    parser = argparse.ArgumentParser(description='Migrate Gradle projects from Nexus to Artifactory')
+    parser.add_argument('--repos', nargs='+', help='Git repository URLs to migrate')
+    parser.add_argument('--repos-file', help='File containing repository URLs (one per line)')
+    parser.add_argument('--git-url', help='Single git repository URL')
+    parser.add_argument('--commit-message', default='Migrate from Nexus to Artifactory', 
+                       help='Commit message for the migration')
+    parser.add_argument('--artifactory-url', required=True, help='Artifactory base URL')
+    parser.add_argument('--artifactory-repo-key', required=True, help='Artifactory repository key')
+    parser.add_argument('--artifactory-username', required=True, help='Artifactory username')
+    parser.add_argument('--artifactory-password', required=True, help='Artifactory password')
+    parser.add_argument('--max-workers', type=int, default=10, 
+                       help='Maximum number of parallel workers')
+    parser.add_argument('--temp-dir', help='Temporary directory for cloning repositories')
+    parser.add_argument('--report-file', default='migration_report.txt', 
+                       help='Output file for migration report')
+    parser.add_argument('--use-enhanced-plugin', action='store_true', default=True,
+                       help='Use enhanced plugin that matches your existing artifactory.gradle')
+    
+    args = parser.parse_args()
+    
+    # Collect repository URLs
+    repo_urls = []
+    if args.repos:
+        repo_urls.extend(args.repos)
+    if args.git_url:
+        repo_urls.append(args.git_url)
+    if args.repos_file:
+        with open(args.repos_file, 'r') as f:
+            repo_urls.extend(line.strip() for line in f if line.strip())
+    
+    if not repo_urls:
+        print("Error: No repository URLs provided. Use --repos, --git-url, or --repos-file")
+        sys.exit(1)
+    
+    # Create migrator
+    migrator = GradleArtifactoryMigrator(
+        artifactory_url=args.artifactory_url,
+        artifactory_repo_key=args.artifactory_repo_key,
+        artifactory_username=args.artifactory_username,
+        artifactory_password=args.artifactory_password,
+        max_workers=args.max_workers,
+        temp_dir=args.temp_dir,
+        use_enhanced_plugin=args.use_enhanced_plugin
+    )
+    
+    print(f"Starting migration for {len(repo_urls)} repositories...")
+    
+    # Run migrations
+    results = migrator.migrate_repositories_parallel(repo_urls, args.commit_message)
+    
+    # Generate and save report
+    report = migrator.generate_report(results)
+    with open(args.report_file, 'w') as f:
+        f.write(report)
+    
+    print(f"\nMigration completed! Report saved to {args.report_file}")
+    print(f"Successful: {sum(1 for r in results if r.success)}")
+    print(f"Failed: {sum(1 for r in results if not r.success)}")
+
+if __name__ == '__main__':
+    main()

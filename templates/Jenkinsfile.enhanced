@@ -1,0 +1,96 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Artifactory configuration
+        ARTIFACTORY_CONTEXTURL = credentials('artifactory-url')
+        ARTIFACTORY_USER = credentials('artifactory-username')
+        ARTIFACTORY_PASSWORD = credentials('artifactory-password')
+        
+        // Git and build information
+        GIT_URL = "${env.GIT_URL}"
+        GIT_BRANCH = "${env.GIT_BRANCH}"
+        GIT_COMMIT = "${env.GIT_COMMIT}"
+        BUILD_URL = "${env.BUILD_URL}"
+        
+        // Release branch configuration (customizable)
+        GIT_RELEASE_BRANCHES = "origin/master,master,origin/main,main"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh './gradlew clean build'
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh './gradlew test'
+            }
+        }
+        
+        stage('Quality Check') {
+            steps {
+                sh './gradlew check'
+            }
+        }
+        
+        stage('Publish to Artifactory') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'develop'
+                }
+            }
+            steps {
+                script {
+                    // The enhanced plugin will automatically determine the target repository based on the branch
+                    sh """
+                        ./gradlew artifactoryPublish \
+                        -Partifactory_contextUrl=\${ARTIFACTORY_CONTEXTURL} \
+                        -Partifactory_user=\${ARTIFACTORY_USER} \
+                        -Partifactory_password=\${ARTIFACTORY_PASSWORD} \
+                        -PGIT_URL=\${GIT_URL} \
+                        -PGIT_BRANCH=\${GIT_BRANCH} \
+                        -PGIT_COMMIT=\${GIT_COMMIT} \
+                        -PBUILD_URL=\${BUILD_URL} \
+                        -PGIT_RELEASE_BRANCHES="\${GIT_RELEASE_BRANCHES}"
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            publishTestResults testResultsPattern: '**/build/test-results/**/*.xml'
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'build/reports/tests/test',
+                reportFiles: 'index.html',
+                reportName: 'Test Report'
+            ])
+        }
+        success {
+            cleanWs()
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '\\${env.JOB_NAME} [\\${env.BUILD_NUMBER}]'",
+                body: """<p>FAILED: Job '\\${env.JOB_NAME} [\\${env.BUILD_NUMBER}]':</p>
+                         <p>Check console output at &quot;<a href='\\${env.BUILD_URL}'>\\${env.JOB_NAME} [\\${env.BUILD_NUMBER}]</a>&quot;</p>""",
+                recipientProviders: [developers(), requestor()]
+            )
+        }
+    }
+}

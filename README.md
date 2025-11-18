@@ -29,24 +29,16 @@ chmod +x gradle_artifactory_migrator.py
 
 ### Single Repository
 ```bash
-python gradle_artifactory_migrator.py \
-  --git-url git@github.com:your-org/your-repo.git \
-  --commit-message "Migrate to Artifactory" \
-  --artifactory-url https://your-artifactory.com/artifactory \
-  --artifactory-repo-key libs-release-local \
-  --artifactory-username your-username \
-  --artifactory-password your-password
+python enhanced_gradle_migrator.py \
+  --git-urls git@github.com:your-org/your-repo.git \
+  --commit-message "Migrate to Artifactory"
 ```
 
 ### Multiple Repositories
 ```bash
-python gradle_artifactory_migrator.py \
-  --repos git@github.com:your-org/repo1.git git@github.com:your-org/repo2.git \
+python enhanced_gradle_migrator.py \
+  --git-urls git@github.com:your-org/repo1.git git@github.com:your-org/repo2.git \
   --commit-message "Migrate to Artifactory" \
-  --artifactory-url https://your-artifactory.com/artifactory \
-  --artifactory-repo-key libs-release-local \
-  --artifactory-username your-username \
-  --artifactory-password your-password \
   --max-workers 20
 ```
 
@@ -56,29 +48,24 @@ python gradle_artifactory_migrator.py \
 echo "git@github.com:your-org/repo1.git" > repos.txt
 echo "git@github.com:your-org/repo2.git" >> repos.txt
 
-python gradle_artifactory_migrator.py \
-  --repos-file repos.txt \
+python enhanced_gradle_migrator.py \
+  --git-file repos.txt \
   --commit-message "Migrate to Artifactory" \
-  --artifactory-url https://your-artifactory.com/artifactory \
-  --artifactory-repo-key libs-release-local \
-  --artifactory-username your-username \
-  --artifactory-password your-password \
   --max-workers 30
 ```
 
 ## Parameters
 
-- `--git-url`: Single git repository URL
-- `--repos`: Multiple repository URLs (space-separated)
-- `--repos-file`: File containing repository URLs (one per line)
+- `--git-urls`: Multiple repository URLs (space-separated)
+- `--git-file`: File containing repository URLs (one per line)
+- `--repo-urls`: Alternative flag for repository URLs
+- `--repo-file`: Alternative flag for repository list file
 - `--commit-message`: Commit message for the migration (default: "Migrate from Nexus to Artifactory")
-- `--artifactory-url`: Artifactory base URL (required)
-- `--artifactory-repo-key`: Artifactory repository key (required)
-- `--artifactory-username`: Artifactory username (required)
-- `--artifactory-password`: Artifactory password (required)
+- `--artifactory-url`: Artifactory base URL (optional; defaults to `https://artifactory.org.com`)
+- `--artifactory-repo-key`: Artifactory repository key (optional)
 - `--max-workers`: Maximum number of parallel workers (default: 10)
 - `--temp-dir`: Temporary directory for cloning repositories
-- `--report-file`: Output file for migration report (default: migration_report.txt)
+- `--report-file`: Output file for migration report (default: migration_report.md)
 
 ## What the Tool Does
 
@@ -92,19 +79,21 @@ python gradle_artifactory_migrator.py \
 
 ## Customization
 
-### Custom Plugin Template
-Edit `templates/artifactory-publishing.gradle` to customize the publishing plugin.
+### Custom Plugin Templates
+Edit `templates/artifactory-publishing-enhanced.gradle` to customize the publishing plugin.
 
 ### Custom Jenkinsfile Template
-Edit `templates/Jenkinsfile.artifactory` to customize the Jenkins pipeline.
+Edit `templates/Jenkinsfile.enhanced` to customize the Jenkins pipeline.
 
-## Environment Variables
+## Credential & URL Sourcing
 
-You can also use environment variables for Artifactory configuration:
-- `ARTIFACTORY_URL`
-- `ARTIFACTORY_REPO_KEY`
-- `ARTIFACTORY_USERNAME`
-- `ARTIFACTORY_PASSWORD`
+- The tool does not require passing Artifactory credentials or repo keys as CLI arguments.
+- Dependency resolution templates reference Gradle properties:
+  - `project.findProperty("artifactory_user")`
+  - `project.findProperty("artifactory_password")`
+  - Fallbacks: `System.getProperty("gradle.wrapperUser")` and `System.getProperty("gradle.wrapperPassword")`
+- Publishing credentials are managed within the Gradle plugin and Jenkinsfile template.
+- Optionally, you may override the Artifactory base URL via `--artifactory-url`.
 
 ## Logging
 
