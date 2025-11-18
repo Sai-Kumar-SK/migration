@@ -66,6 +66,7 @@ python enhanced_gradle_migrator.py \
 - `--max-workers`: Maximum number of parallel workers (default: 10)
 - `--temp-dir`: Temporary directory for cloning repositories
 - `--report-file`: Output file for migration report (default: migration_report.md)
+- `--branch-name`: Branch name used for migration changes (optional; default: `horizon-migration`)
 
 ## What the Tool Does
 
@@ -79,8 +80,8 @@ python enhanced_gradle_migrator.py \
 
 ## Customization
 
-### Custom Plugin Templates
-Edit `templates/artifactory-publishing-enhanced.gradle` to customize the publishing plugin.
+### Custom Plugin Template
+Edit `templates/artifactory.gradle` to customize the publishing plugin.
 
 ### Custom Jenkinsfile Template
 Edit `templates/Jenkinsfile.enhanced` to customize the Jenkins pipeline.

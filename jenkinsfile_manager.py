@@ -140,7 +140,9 @@ class CompleteMigrationManager:
             # Step 1: Run the Gradle migration workflow
             print("\n1. Running Gradle migration workflow...")
             workflow = GradleMigrationWorkflow(str(self.project_root))
-            gradle_result = workflow.run_migration_workflow("templates/artifactory-publishing-enhanced.gradle")
+            tool_root = Path(__file__).resolve().parents[1]
+            tpl_path = tool_root / 'templates' / 'artifactory.gradle'
+            gradle_result = workflow.run_migration_workflow(str(tpl_path))
             result['gradle_migration'] = gradle_result
             
             if not gradle_result.get('success', False):

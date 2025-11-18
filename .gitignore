@@ -1,0 +1,50 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing and coverage
+.pytest_cache/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs and reports
+*.log
+migration_report*.md
+batch_*_report*.md
+
+# Editor/IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local config and scratch files
+repos.txt
+batch_*.txt
+*.tmp
+*.swp
+~*
+
+# Node (just in case templates include JS)
+node_modules/
+
+# Gradle caches (if any gradle runs locally in this repo)
+.gradle/

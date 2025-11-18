@@ -10,7 +10,7 @@ class TestHzPublishSetup(unittest.TestCase):
             setup = HzPublishSetup(str(root))
             ok = setup.setup_buildsrc_structure()
             self.assertTrue(ok)
-            src = Path(__file__).resolve().parents[1] / 'templates' / 'artifactory-publishing-enhanced.gradle'
+            src = Path(__file__).resolve().parents[1] / 'templates' / 'artifactory.gradle'
             copy_ok = setup.copy_artifactory_plugin(str(src))
             self.assertTrue(copy_ok)
             self.assertTrue(setup.create_hzpublish_plugin_class())

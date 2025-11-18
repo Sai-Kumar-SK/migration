@@ -228,8 +228,15 @@ class GradleMigrationWorkflow:
     def _setup_hzpublish_plugin(self, enhanced_plugin_path: str) -> Dict:
         """Setup hzPublish plugin in buildSrc directory."""
         try:
+            # Resolve plugin source path to absolute, with fallback to tool root
+            source = Path(enhanced_plugin_path)
+            if not source.is_absolute():
+                source = Path(__file__).resolve().parents[0] / source
+            if not source.exists():
+                # Fallback to tool-root templates
+                source = Path(__file__).resolve().parents[0] / 'templates' / 'artifactory.gradle'
             # Run complete setup
-            setup_result = self.hzpublish_setup.setup_complete_hzpublish(enhanced_plugin_path)
+            setup_result = self.hzpublish_setup.setup_complete_hzpublish(str(source))
             
             # Verify setup
             verification = self.hzpublish_setup.verify_hzpublish_setup()
@@ -339,7 +346,7 @@ def main():
         return
     
     project_root = sys.argv[1]
-    enhanced_plugin_path = sys.argv[2] if len(sys.argv) > 2 else "templates/artifactory-publishing-enhanced.gradle"
+    enhanced_plugin_path = sys.argv[2] if len(sys.argv) > 2 else "templates/artifactory.gradle"
     
     if not os.path.exists(enhanced_plugin_path):
         print(f"Enhanced plugin template not found: {enhanced_plugin_path}")

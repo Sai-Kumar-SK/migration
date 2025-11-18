@@ -116,7 +116,7 @@ plugins {
 ```
 
 ### Step 5: hzPublish Plugin Setup
-- Copies `artifactory-publishing-enhanced.gradle` to `buildSrc/src/main/groovy/hzPublish.gradle`
+- Copies `artifactory.gradle` to `buildSrc/src/main/groovy/hzPublish.gradle`
 - Creates `HzPublishPlugin` class for plugin application
 - Sets up buildSrc build.gradle for plugin development
 

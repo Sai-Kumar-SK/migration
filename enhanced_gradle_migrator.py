@@ -40,12 +40,14 @@ class EnhancedGradleArtifactoryMigrator:
     def __init__(self, artifactory_url: str,
                  artifactory_repo_key: Optional[str] = None,
                  max_workers: int = 10, temp_dir: Optional[str] = None,
-                 use_enhanced_plugin: bool = True):
+                 use_enhanced_plugin: bool = True,
+                 branch_name: str = 'horizon-migration'):
         self.artifactory_url = artifactory_url
         self.artifactory_repo_key = artifactory_repo_key
         self.max_workers = max_workers
         self.temp_dir = temp_dir or tempfile.gettempdir()
         self.use_enhanced_plugin = use_enhanced_plugin
+        self.branch_name = branch_name
         
         # Setup logging
         self.setup_logging()
@@ -66,20 +68,14 @@ class EnhancedGradleArtifactoryMigrator:
         self.logger = logging.getLogger(__name__)
     
     def load_templates(self):
-        """Load plugin and Jenkinsfile templates.
-        Prefer a repository-provided `artifactory.gradle` if present; otherwise use the enhanced template.
-        """
+        """Load plugin and Jenkinsfile templates from the tool's templates directory."""
         base_dir = Path(__file__).parent
         template_dir = base_dir / "templates"
 
-        # Prefer root-level artifactory.gradle provided by user
-        repo_plugin = base_dir / "artifactory.gradle"
-        if repo_plugin.exists():
-            self.plugin_template_path = repo_plugin
-        else:
-            self.plugin_template_path = template_dir / "artifactory-publishing-enhanced.gradle"
+        # Use single canonical plugin template
+        self.plugin_template_path = template_dir / "artifactory.gradle"
 
-        # Always use enhanced Jenkinsfile template
+        # Jenkinsfile template
         self.jenkinsfile_template_path = template_dir / "Jenkinsfile.enhanced"
     
     def clone_repository(self, repo_url: str, work_dir: Path) -> Tuple[bool, str]:
@@ -121,7 +117,18 @@ class EnhancedGradleArtifactoryMigrator:
             error_msg = f"Error cloning {repo_url}: {str(e)}"
             self.logger.error(error_msg)
             return False, error_msg
-    
+
+    def ensure_branch(self, work_dir: Path, branch_name: str = 'horizon-migration') -> Tuple[bool, str]:
+        try:
+            create = subprocess.run(['git', 'checkout', '-b', branch_name], cwd=work_dir, capture_output=True, text=True)
+            if create.returncode != 0:
+                checkout = subprocess.run(['git', 'checkout', branch_name], cwd=work_dir, capture_output=True, text=True)
+                if checkout.returncode != 0:
+                    return False, checkout.stderr
+            return True, branch_name
+        except Exception as e:
+            return False, str(e)
+
     def run_comprehensive_migration(self, work_dir: Path) -> MigrationResult:
         """Run the new comprehensive migration workflow"""
         try:
@@ -197,6 +204,11 @@ class EnhancedGradleArtifactoryMigrator:
             success, message = self.clone_repository(repo_url, work_dir)
             if not success:
                 return MigrationResult(repo_url, False, message, [])
+
+            # Create and checkout migration branch
+            b_ok, b_msg = self.ensure_branch(work_dir, self.branch_name)
+            if not b_ok:
+                return MigrationResult(repo_url, False, f"Failed to create/checkout branch: {b_msg}", [])
             
             # Run comprehensive migration
             result = self.run_comprehensive_migration(work_dir)
@@ -242,7 +254,12 @@ class EnhancedGradleArtifactoryMigrator:
             subprocess.run(['git', 'commit', '-m', commit_message], cwd=work_dir, check=True)
             
             # Push changes
-            subprocess.run(['git', 'push'], cwd=work_dir, check=True)
+            branch = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=work_dir, capture_output=True, text=True)
+            current_branch = branch.stdout.strip() if branch.returncode == 0 else None
+            if current_branch:
+                subprocess.run(['git', 'push', '-u', 'origin', current_branch], cwd=work_dir, check=True)
+            else:
+                subprocess.run(['git', 'push'], cwd=work_dir, check=True)
             
             self.logger.info("Changes committed and pushed successfully")
             return True, "Changes committed and pushed successfully"
@@ -350,6 +367,8 @@ def main():
                        help='Output report file')
     parser.add_argument('--use-legacy-migration', action='store_true',
                        help='Use legacy migration method instead of comprehensive workflow')
+    parser.add_argument('--branch-name', default='horizon-migration', 
+                       help='Branch name to create and use for migration changes (default: horizon-migration)')
     
     args = parser.parse_args()
     
@@ -379,7 +398,8 @@ def main():
         artifactory_url=args.artifactory_url,
         artifactory_repo_key=args.artifactory_repo_key,
         max_workers=args.max_workers,
-        temp_dir=args.temp_dir
+        temp_dir=args.temp_dir,
+        branch_name=args.branch_name
     )
     
     # Run migrations

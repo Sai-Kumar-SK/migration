@@ -114,7 +114,7 @@ def check_templates():
     print("\nChecking template files...")
     templates_dir = Path('templates')
     required_templates = [
-        'artifactory-publishing-enhanced.gradle',
+        'artifactory.gradle',
         'Jenkinsfile.enhanced'
     ]
     

@@ -48,10 +48,10 @@ gradlePlugin {
             return False
     
     def copy_artifactory_plugin(self, source_template_path: str) -> bool:
-        """Copy artifactory-publishing-enhanced.gradle to hzPublish.gradle.
+        """Copy artifactory.gradle to hzPublish.gradle.
         
         Args:
-            source_template_path: Path to the artifactory-publishing-enhanced.gradle template
+            source_template_path: Path to the artifactory.gradle template
             
         Returns:
             True if successful, False otherwise
@@ -195,7 +195,7 @@ def main():
         return
     
     project_root = sys.argv[1]
-    template_path = sys.argv[2] if len(sys.argv) > 2 else "templates/artifactory-publishing-enhanced.gradle"
+    template_path = sys.argv[2] if len(sys.argv) > 2 else "templates/artifactory.gradle"
     
     setup = HzPublishSetup(project_root)
     
