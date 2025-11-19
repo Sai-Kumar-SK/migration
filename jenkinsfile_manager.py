@@ -14,9 +14,8 @@ class JenkinsfileManager:
         """Replace existing Jenkinsfile with template."""
         result = {
             'success': False,
-            'old_jenkinsfile_backed_up': False,
             'new_jenkinsfile_copied': False,
-            'backup_path': None,
+            'backup_removed': False,
             'errors': []
         }
         
@@ -26,20 +25,24 @@ class JenkinsfileManager:
                 result['errors'].append(f"Template file not found: {template_path}")
                 return result
             
-            # Backup existing Jenkinsfile if it exists
-            if self.jenkinsfile.exists():
-                backup_path = self.jenkinsfile.with_suffix('.jenkinsfile.backup')
-                shutil.copy2(self.jenkinsfile, backup_path)
-                result['old_jenkinsfile_backed_up'] = True
-                result['backup_path'] = str(backup_path)
-                print(f"Backed up existing Jenkinsfile to {backup_path}")
-            
             # Copy new Jenkinsfile
             shutil.copy2(template_file, self.jenkinsfile)
             result['new_jenkinsfile_copied'] = True
             result['success'] = True
             
             print(f"Successfully replaced Jenkinsfile with template from {template_path}")
+
+            backup_path = self.jenkinsfile.with_suffix('.jenkinsfile.backup')
+            if backup_path.exists():
+                try:
+                    tpl_content = template_file.read_text(encoding='utf-8')
+                    bkp_content = backup_path.read_text(encoding='utf-8')
+                    cur_content = self.jenkinsfile.read_text(encoding='utf-8')
+                    if bkp_content == tpl_content or bkp_content == cur_content:
+                        backup_path.unlink()
+                        result['backup_removed'] = True
+                except Exception:
+                    pass
             
         except Exception as e:
             result['errors'].append(f"Error replacing Jenkinsfile: {str(e)}")

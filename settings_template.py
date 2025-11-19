@@ -121,8 +121,8 @@ def append_repositories_to_settings(settings_file: str, artifactory_url: str = "
                 else:
                     new_content = content + '\n\ndependencyResolutionManagement {\n    repositories {' + template.strip() + '\n    }\n}'
         else:
-            # Append to end of file
-            new_content = content + '\n\n' + template.strip()
+            # Prepend at the beginning of the file
+            new_content = template.strip() + '\n\n' + content
         
         # Write updated content
         with open(settings_file, 'w', encoding='utf-8') as f:
