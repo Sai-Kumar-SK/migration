@@ -14,10 +14,8 @@ class TestSettingsTemplate(unittest.TestCase):
             self.assertIn('artifactory.org.com', content)
 
     def test_get_templates(self):
-        groovy = get_settings_template(False)
-        kts = get_settings_template(True)
+        groovy = get_settings_template()
         self.assertIn('repositories', groovy)
-        self.assertIn('repositories', kts)
 
 if __name__ == '__main__':
     unittest.main()

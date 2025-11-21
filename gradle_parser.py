@@ -18,12 +18,8 @@ class GradleProjectParser:
         """Find all .gradle files in the project including submodules."""
         gradle_files = []
         
-        # Find all .gradle files
+        # Find all .gradle files (Groovy DSL only)
         for file_path in self.project_root.rglob("*.gradle"):
-            gradle_files.append(str(file_path))
-            
-        # Find all .gradle.kts files (Kotlin DSL)
-        for file_path in self.project_root.rglob("*.gradle.kts"):
             gradle_files.append(str(file_path))
             
         # Find gradle-wrapper.properties
@@ -79,7 +75,7 @@ class GradleProjectParser:
     
     def _find_root_build_gradle(self) -> Optional[str]:
         """Find root build.gradle file."""
-        for filename in ['build.gradle', 'build.gradle.kts']:
+        for filename in ['build.gradle']:
             root_build = self.project_root / filename
             if root_build.exists():
                 return str(root_build)
@@ -87,7 +83,7 @@ class GradleProjectParser:
     
     def _find_settings_gradle(self) -> Optional[str]:
         """Find settings.gradle file."""
-        for filename in ['settings.gradle', 'settings.gradle.kts']:
+        for filename in ['settings.gradle']:
             settings = self.project_root / filename
             if settings.exists():
                 return str(settings)

@@ -54,6 +54,37 @@ python enhanced_gradle_migrator.py \
   --max-workers 30
 ```
 
+### Horizon Standard Migration (settings + wrapper + dependency verification)
+
+This flow prepends the Artifactory repositories block to line 1 of `settings.gradle`, updates `gradle/wrapper/gradle-wrapper.properties` `distributionUrl` to point to Artifactory (derives the Gradle version from the existing Nexus URL), verifies dependency resolution with Gradle, then commits and pushes on success.
+
+#### Single Repository
+```bash
+python horizon_standard_migrator.py \
+  --git-urls git@github.com:your-org/your-repo.git \
+  --commit-message "Migrate settings + wrapper to Artifactory" \
+  --branch-name horizon-migration \
+  --artifactory-url https://artifactory.org.com/artifactory
+```
+
+#### Multiple Repositories (from file)
+```bash
+python horizon_standard_migrator.py \
+  --git-file repos.txt \
+  --commit-message "Migrate settings + wrapper to Artifactory" \
+  --branch-name horizon-migration \
+  --max-workers 20 \
+  --artifactory-url https://artifactory.org.com/artifactory
+```
+
+#### Behavior
+- Clones via SSH, creates/checkout branch `--branch-name` (default `horizon-migration`).
+- Detects Gradle Platform; if detected, stops with a message and does not modify files.
+- Prepends repositories block to `settings.gradle` (line 1).
+- Updates `gradle/wrapper/gradle-wrapper.properties` `distributionUrl` using the version parsed from the existing Nexus URL.
+- Runs Gradle `dependencies --refresh-dependencies --no-daemon` via wrapper if present; only commits on success.
+- Pushes to `origin/<branch-name>`.
+
 ## Parameters
 
 - `--git-urls`: Multiple repository URLs (space-separated)

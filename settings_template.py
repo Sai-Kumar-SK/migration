@@ -27,50 +27,10 @@ repositories {
 }
 '''
 
-SETTINGS_GRADLE_KTS_TEMPLATE = '''
-// Artifactory repositories for dependency resolution
-repositories {
-    maven {
-        url = uri("https://artifactory.org.com/artifactory/libs-release")
-        credentials {
-            username = project.findProperty("artifactory_user") as String? ?: System.getProperty("gradle.wrapperUser")
-            password = project.findProperty("artifactory_password") as String? ?: System.getProperty("gradle.wrapperPassword")
-        }
-        authentication {
-            create<BasicAuthentication>("basic")
-        }
-    }
-    maven {
-        url = uri("https://artifactory.org.com/artifactory/libs-snapshot")
-        credentials {
-            username = project.findProperty("artifactory_user") as String? ?: System.getProperty("gradle.wrapperUser")
-            password = project.findProperty("artifactory_password") as String? ?: System.getProperty("gradle.wrapperPassword")
-        }
-        authentication {
-            create<BasicAuthentication>("basic")
-        }
-    }
-}
-'''
-
-def get_settings_template(is_kotlin_dsl: bool = False, artifactory_url: str = "https://artifactory.org.com") -> str:
-    """Get the appropriate settings.gradle template.
-    
-    Args:
-        is_kotlin_dsl: Whether to use Kotlin DSL template
-        artifactory_url: Base URL for Artifactory instance
-    
-    Returns:
-        Template string for settings.gradle repositories configuration
-    """
-    if is_kotlin_dsl:
-        template = SETTINGS_GRADLE_KTS_TEMPLATE
-    else:
-        template = SETTINGS_GRADLE_TEMPLATE
-        
-    # Replace placeholder URLs with actual Artifactory URL
+def get_settings_template(artifactory_url: str = "https://artifactory.org.com") -> str:
+    """Get the Groovy settings.gradle template (no Kotlin)."""
+    template = SETTINGS_GRADLE_TEMPLATE
     template = template.replace('https://artifactory.org.com', artifactory_url)
-    
     return template
 
 def append_repositories_to_settings(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
@@ -84,11 +44,8 @@ def append_repositories_to_settings(settings_file: str, artifactory_url: str = "
         True if successful, False otherwise
     """
     try:
-        # Determine if it's Kotlin DSL
-        is_kotlin_dsl = settings_file.endswith('.kts')
-        
         # Get the appropriate template
-        template = get_settings_template(is_kotlin_dsl, artifactory_url)
+        template = get_settings_template(artifactory_url)
         
         # Read existing content
         with open(settings_file, 'r', encoding='utf-8') as f:
