@@ -129,11 +129,18 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
     Prefers Gradle wrapper if present. Falls back to system Gradle.
     """
     try:
+        is_windows = platform.system().lower().startswith('win')
+        gradlew_bat = work_dir / 'gradlew.bat'
         gradlew_sh = work_dir / 'gradlew'
         if gradlew_sh.exists():
-            cmd = [str(gradlew_sh), 'dependencies', '--refresh-dependencies', '--no-daemon']
+            if is_windows:
+                # Prefer running Unix wrapper via bash on Windows when available
+                cmd = ['bash', '-lc', './gradlew dependencies --refresh-dependencies --no-daemon']
+            else:
+                cmd = [str(gradlew_sh), 'dependencies', '--refresh-dependencies', '--no-daemon']
+        elif is_windows and gradlew_bat.exists():
+            cmd = [str(gradlew_bat), 'dependencies', '--refresh-dependencies', '--no-daemon']
         else:
-            # Fallback to system gradle
             cmd = ['gradle', 'dependencies', '--refresh-dependencies', '--no-daemon']
 
         proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
