@@ -143,7 +143,15 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
         else:
             cmd = ['gradle', 'dependencies', '--refresh-dependencies', '--no-daemon']
 
-        proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+        # Build environment with selected JAVA_HOME
+        version = parse_gradle_version_from_wrapper(work_dir)
+        java_home = select_java_home_for_gradle_version(version)
+        env = os.environ.copy()
+        if java_home:
+            env['JAVA_HOME'] = java_home
+            env['PATH'] = str(Path(java_home) / 'bin') + os.pathsep + env.get('PATH', '')
+
+        proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, env=env)
 
         # Build log file path
         tmp_dir = Path(tempfile.gettempdir())
@@ -166,7 +174,7 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
 
         header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
         footer = "**************END*******************\n"
-        cmd_line = f"Command: {' '.join(cmd)}\n"
+        cmd_line = f"Command: {' '.join(cmd)}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
         summary = ''
         if unresolved:
             summary = "=== Summary of unresolved dependencies ===\n" + "\n".join(f"- {u}" for u in unresolved) + "\n\n"
@@ -192,7 +200,7 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
             header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
             msg = 'Gradle/Gradle wrapper not found in repository'
-            log_file.write_text(header + msg + "\n" + footer, encoding='utf-8')
+            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + msg + "\n" + footer, encoding='utf-8')
             return False, msg + f". Log: {log_file}"
         except Exception:
             return False, 'Gradle/Gradle wrapper not found in repository'
@@ -204,10 +212,54 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
             log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
             header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
-            log_file.write_text(header + str(e) + "\n" + footer, encoding='utf-8')
+            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + str(e) + "\n" + footer, encoding='utf-8')
             return False, str(e) + f". Log: {log_file}"
         except Exception:
             return False, str(e)
+
+def parse_gradle_version_from_wrapper(work_dir: Path) -> str:
+    try:
+        props = work_dir / 'gradle' / 'wrapper' / 'gradle-wrapper.properties'
+        if props.exists():
+            content = props.read_text(encoding='utf-8', errors='ignore')
+            m = re.search(r'gradle-([\d.]+)-all\.zip', content)
+            if m:
+                return m.group(1)
+        # Fallback: search build files for wrapper { gradleVersion = 'x.y.z' }
+        for candidate in ['build.gradle', 'settings.gradle']:
+            f = work_dir / candidate
+            if f.exists():
+                c = f.read_text(encoding='utf-8', errors='ignore')
+                m2 = re.search(r"gradleVersion\s*=\s*['\"]([\d.]+)['\"]", c)
+                if m2:
+                    return m2.group(1)
+    except Exception:
+        pass
+    return ''
+
+def select_java_home_for_gradle_version(version: str) -> str:
+    try:
+        parts = [int(p) for p in (version.split('.') if version else [])]
+        major = parts[0] if parts else 0
+        minor = parts[1] if len(parts) > 1 else 0
+    except Exception:
+        major, minor = 0, 0
+    env = os.environ
+    def pick(*vars):
+        for v in vars:
+            p = env.get(v)
+            if p:
+                return p
+        return ''
+    if major == 0:
+        return pick('JAVA11_HOME', 'JAVA17_HOME', 'JAVA8_HOME', 'JAVA21_HOME')
+    if major <= 6:
+        return pick('JAVA11_HOME', 'JAVA8_HOME')
+    if major == 7:
+        if minor >= 3:
+            return pick('JAVA17_HOME', 'JAVA11_HOME')
+        return pick('JAVA11_HOME')
+    return pick('JAVA17_HOME', 'JAVA21_HOME')
 
 def extract_repo_name(repo_url: str) -> str:
     u = repo_url.strip()
