@@ -14,6 +14,7 @@ from settings_template import append_repositories_to_settings
 from wrapper_updater import update_gradle_wrapper
 import platform
 import tempfile
+import re
 
 def clone_repo(repo_url: str, work_dir: Path) -> Tuple[bool, str]:
     try:
@@ -41,8 +42,8 @@ def ensure_branch(work_dir: Path, branch_name: str) -> Tuple[bool, str]:
 
 def commit_push(work_dir: Path, message: str) -> Tuple[bool, str]:
     try:
-        subprocess.run(['git', 'config', 'user.name', os.environ.get('GIT_USER', 'Migration Bot')], cwd=work_dir, check=True)
-        subprocess.run(['git', 'config', 'user.email', os.environ.get('GIT_EMAIL', 'migration@bot.com')], cwd=work_dir, check=True)
+        #subprocess.run(['git', 'config', 'user.name', os.environ.get('GIT_USER', 'Migration Bot')], cwd=work_dir, check=True)
+        #subprocess.run(['git', 'config', 'user.email', os.environ.get('GIT_EMAIL', 'migration@bot.com')], cwd=work_dir, check=True)
         subprocess.run(['git', 'add', '.'], cwd=work_dir, check=True)
         status = subprocess.run(['git', 'status', '--porcelain'], cwd=work_dir, capture_output=True, text=True)
         if not status.stdout.strip():
@@ -70,9 +71,9 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
         ok = append_repositories_to_settings(settings, artifactory_url)
         result['steps'].append({'settings_updated': ok, 'file': settings})
 
-        # Remove PlasmaNexus allprojects block if present
+        # Remove any gradle.allprojects { ... } block irrespective of contents
         clean_res = remove_plasma_nexus_block(settings)
-        result['steps'].append({'plasma_nexus_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0)})
+        result['steps'].append({'allprojects_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0), 'removed_count': clean_res.get('removed_count', 0)})
     else:
         result['steps'].append({'settings_updated': False, 'error': 'settings.gradle not found'})
 
@@ -128,12 +129,8 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
     Prefers Gradle wrapper if present. Falls back to system Gradle.
     """
     try:
-        is_windows = platform.system().lower().startswith('win')
-        gradlew_bat = work_dir / 'gradlew.bat'
         gradlew_sh = work_dir / 'gradlew'
-        if is_windows and gradlew_bat.exists():
-            cmd = [str(gradlew_bat), 'dependencies', '--refresh-dependencies', '--no-daemon']
-        elif (not is_windows) and gradlew_sh.exists():
+        if gradlew_sh.exists():
             cmd = [str(gradlew_sh), 'dependencies', '--refresh-dependencies', '--no-daemon']
         else:
             # Fallback to system gradle
@@ -180,9 +177,30 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
             err = err[-2000:]
         return False, (err or 'Gradle dependency resolution failed') + f". Log: {log_file}"
     except FileNotFoundError:
-        return False, 'Gradle/Gradle wrapper not found in repository'
+        # Ensure we still write an error log file for visibility
+        try:
+            tmp_dir = Path(tempfile.gettempdir())
+            repo_name = extract_repo_name(repo_url)
+            log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
+            header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+            footer = "**************END*******************\n"
+            msg = 'Gradle/Gradle wrapper not found in repository'
+            log_file.write_text(header + msg + "\n" + footer, encoding='utf-8')
+            return False, msg + f". Log: {log_file}"
+        except Exception:
+            return False, 'Gradle/Gradle wrapper not found in repository'
     except Exception as e:
-        return False, str(e)
+        # Write error log as well
+        try:
+            tmp_dir = Path(tempfile.gettempdir())
+            repo_name = extract_repo_name(repo_url)
+            log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
+            header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+            footer = "**************END*******************\n"
+            log_file.write_text(header + str(e) + "\n" + footer, encoding='utf-8')
+            return False, str(e) + f". Log: {log_file}"
+        except Exception:
+            return False, str(e)
 
 def extract_repo_name(repo_url: str) -> str:
     u = repo_url.strip()
@@ -198,48 +216,52 @@ def extract_repo_name(repo_url: str) -> str:
     return name or 'repo'
 
 def remove_plasma_nexus_block(settings_file: str) -> dict:
-    """Remove gradle.allprojects { ... PlasmaNexus ... } block from settings.gradle.
+    """Remove any gradle.allprojects { ... } block from settings.gradle, irrespective of contents.
 
-    Returns dict with keys: removed (bool), removed_bytes (int), error (optional)
+    Returns dict with keys: removed (bool), removed_bytes (int), removed_count (int), error (optional)
     """
-    res = {'removed': False, 'removed_bytes': 0}
+    res = {'removed': False, 'removed_bytes': 0, 'removed_count': 0}
     try:
         p = Path(settings_file)
         if not p.exists():
             return res
         content = p.read_text(encoding='utf-8')
-        marker_idx = content.find('ext.PlasmaNexus')
-        if marker_idx == -1:
-            return res
-        # Find the preceding allprojects start
-        ap_matches = list(re.finditer(r'(?:gradle\.)?allprojects\s*\{', content[:marker_idx]))
-        if not ap_matches:
-            return res
-        start_span = ap_matches[-1].span()
-        start_idx = start_span[0]
-        # Find position of the opening brace '{' from this match
-        brace_start = content.find('{', start_idx)
-        if brace_start == -1:
-            return res
-        # Walk to find matching closing brace
-        depth = 0
-        end_idx = brace_start
-        for i in range(brace_start, len(content)):
-            c = content[i]
-            if c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    end_idx = i
-                    break
-        if depth != 0:
-            return res
-        # Remove block
-        new_content = content[:start_idx] + content[end_idx+1:]
-        res['removed_bytes'] = len(content) - len(new_content)
-        p.write_text(new_content, encoding='utf-8')
-        res['removed'] = True
+        pattern = re.compile(r'(?is)(?:gradle\.)?allprojects\s*\{')
+        removed_any = False
+        total_removed = 0
+        while True:
+            m = pattern.search(content)
+            if not m:
+                break
+            start_idx = m.start()
+            # Find matching closing brace from start of this block
+            brace_start = content.find('{', start_idx)
+            if brace_start == -1:
+                break
+            depth = 0
+            end_idx = None
+            for i in range(brace_start, len(content)):
+                ch = content[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i
+                        break
+            if end_idx is None:
+                break
+            # Remove this block
+            before = len(content)
+            content = content[:start_idx] + content[end_idx+1:]
+            after = len(content)
+            total_removed += (before - after)
+            removed_any = True
+            res['removed_count'] += 1
+        if removed_any:
+            p.write_text(content, encoding='utf-8')
+            res['removed'] = True
+            res['removed_bytes'] = total_removed
         return res
     except Exception as e:
         res['error'] = str(e)
