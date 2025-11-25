@@ -13,6 +13,7 @@ from gradle_parser import GradleProjectParser
 from settings_template import append_repositories_to_settings
 from wrapper_updater import update_gradle_wrapper
 import platform
+import tempfile
 
 def clone_repo(repo_url: str, work_dir: Path) -> Tuple[bool, str]:
     try:
@@ -106,7 +107,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     out['details'] = mig
     if mig['success']:
         # Verify dependency resolution before committing
-        v_ok, v_msg = verify_dependency_resolution(work_dir)
+        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
         if not v_ok:
             out['success'] = False
@@ -117,7 +118,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         out['details']['commit'] = c_msg
     return out
 
-def verify_dependency_resolution(work_dir: Path) -> Tuple[bool, str]:
+def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, str]:
     """Run Gradle to verify dependencies resolve successfully.
 
     Prefers Gradle wrapper if present. Falls back to system Gradle.
@@ -135,18 +136,62 @@ def verify_dependency_resolution(work_dir: Path) -> Tuple[bool, str]:
             cmd = ['gradle', 'dependencies', '--refresh-dependencies', '--no-daemon']
 
         proc = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+
+        # Build log file path
+        tmp_dir = Path(tempfile.gettempdir())
+        # Extract repo name
+        repo_name = extract_repo_name(repo_url)
+        log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
+
+        combined = (proc.stdout or '') + "\n" + (proc.stderr or '')
+        # Summary of unresolved dependencies
+        patterns = ['Could not resolve', 'Could not find', 'Could not get resource', 'UNRESOLVED', 'Failed to download']
+        unresolved = []
+        seen = set()
+        for line in combined.splitlines():
+            low = line.lower()
+            if any(p.lower() in low for p in patterns):
+                key = line.strip()
+                if key not in seen:
+                    seen.add(key)
+                    unresolved.append(key)
+
+        header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+        footer = "**************END*******************\n"
+        cmd_line = f"Command: {' '.join(cmd)}\n"
+        summary = ''
+        if unresolved:
+            summary = "=== Summary of unresolved dependencies ===\n" + "\n".join(f"- {u}" for u in unresolved) + "\n\n"
+
+        try:
+            log_file.write_text(header + cmd_line + summary + combined + "\n" + footer, encoding='utf-8')
+        except Exception:
+            pass
+
         if proc.returncode == 0:
-            return True, 'Dependencies resolved successfully'
+            return True, f'Dependencies resolved successfully. Log: {log_file}'
         # Collect a concise error message
         err = proc.stderr.strip() or proc.stdout.strip()
-        # Limit message size
         if len(err) > 2000:
             err = err[-2000:]
-        return False, err or 'Gradle dependency resolution failed'
+        return False, (err or 'Gradle dependency resolution failed') + f". Log: {log_file}"
     except FileNotFoundError:
         return False, 'Gradle/Gradle wrapper not found in repository'
     except Exception as e:
         return False, str(e)
+
+def extract_repo_name(repo_url: str) -> str:
+    u = repo_url.strip()
+    name = u
+    if '@' in u and ':' in u:
+        # git@host:org/repo.git
+        name = u.split(':', 1)[1].split('/')[-1]
+    else:
+        parts = u.rstrip('/').split('/')
+        name = parts[-1] if parts else u
+    if name.endswith('.git'):
+        name = name[:-4]
+    return name or 'repo'
 
 def main():
     ap = argparse.ArgumentParser(description='Horizon Standard Gradle Migration (prepend settings + update wrapper)')

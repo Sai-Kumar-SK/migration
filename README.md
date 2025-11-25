@@ -85,6 +85,31 @@ python horizon_standard_migrator.py \
 - Runs Gradle `dependencies --refresh-dependencies --no-daemon` via wrapper if present; only commits on success.
 - Pushes to `origin/<branch-name>`.
 
+### Dependency Log Aggregator
+
+After running the standard migration, aggregate unresolved dependencies across all per-repo logs.
+
+#### Usage
+```bash
+# Default scans your system temp directory and appends to aggregated log in the same location
+python aggregate_dependency_logs.py
+
+# Specify logs directory and aggregated output file
+python aggregate_dependency_logs.py \
+  --logs-dir /tmp \
+  --output-file /tmp/dependency-resolution-aggregated.log
+```
+
+#### Behavior
+- Scans `dependency-resolution-*.log` files in the specified directory
+- Extracts unresolved dependencies and appends unique coordinates to the aggregated file
+- Avoids duplicates across runs by skipping already-recorded `group:name:version` lines
+- Records per-entry repos seen in that run
+
+#### Log Locations
+- Linux/macOS: `/tmp`
+- Windows: `C:\\Users\\<username>\\AppData\\Local\\Temp`
+
 ## Parameters
 
 - `--git-urls`: Multiple repository URLs (space-separated)
