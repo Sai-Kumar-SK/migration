@@ -7,7 +7,7 @@ import subprocess
 import argparse
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from gradle_parser import GradleProjectParser
 from settings_template import append_repositories_to_settings
@@ -89,7 +89,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
                         all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
     return result
 
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path) -> dict:
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     ok, msg = clone_repo(repo_url, work_dir)
@@ -112,7 +112,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     out['details'] = mig
     if mig['success']:
         # Verify dependency resolution before committing
-        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url)
+        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
         if not v_ok:
             out['success'] = False
@@ -123,7 +123,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         out['details']['commit'] = c_msg
     return out
 
-def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, str]:
+def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_override: Optional[str] = None) -> Tuple[bool, str]:
     """Run Gradle to verify dependencies resolve successfully.
 
     Prefers Gradle wrapper if present. Falls back to system Gradle.
@@ -145,7 +145,7 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str) -> Tuple[bool, s
 
         # Build environment with selected JAVA_HOME
         version = parse_gradle_version_from_wrapper(work_dir)
-        java_home = select_java_home_for_gradle_version(version)
+        java_home = java_home_override if java_home_override else select_java_home_for_gradle_version(version)
         env = os.environ.copy()
         if java_home:
             env['JAVA_HOME'] = java_home
@@ -245,21 +245,58 @@ def select_java_home_for_gradle_version(version: str) -> str:
     except Exception:
         major, minor = 0, 0
     env = os.environ
-    def pick(*vars):
-        for v in vars:
+    def pick_exact(required_major: int) -> str:
+        # Prefer exact env var, then validate JAVA_HOME if it matches required major
+        order = []
+        if required_major == 11:
+            order = ['JAVA11_HOME', 'JAVA8_HOME']
+        elif required_major in (17, 21):
+            order = ['JAVA17_HOME', 'JAVA21_HOME']
+        else:
+            order = ['JAVA11_HOME', 'JAVA17_HOME', 'JAVA8_HOME', 'JAVA21_HOME']
+        for v in order:
             p = env.get(v)
             if p:
                 return p
+        # Validate existing JAVA_HOME if present
+        existing = env.get('JAVA_HOME', '')
+        if existing:
+            jmaj = detect_java_major(existing)
+            if required_major == 11 and (jmaj == 11 or jmaj == 8):
+                return existing
+            if required_major in (17, 21) and (jmaj >= 17):
+                return existing
         return ''
+    # Unknown version: prefer 11
     if major == 0:
-        return pick('JAVA11_HOME', 'JAVA17_HOME', 'JAVA8_HOME', 'JAVA21_HOME')
+        return pick_exact(11)
     if major <= 6:
-        return pick('JAVA11_HOME', 'JAVA8_HOME')
+        return pick_exact(11)
     if major == 7:
         if minor >= 3:
-            return pick('JAVA17_HOME', 'JAVA11_HOME')
-        return pick('JAVA11_HOME')
-    return pick('JAVA17_HOME', 'JAVA21_HOME')
+            return pick_exact(17)
+        return pick_exact(11)
+    return pick_exact(17)
+
+def detect_java_major(java_home_path: str) -> int:
+    try:
+        env = os.environ.copy()
+        env['JAVA_HOME'] = java_home_path
+        env['PATH'] = str(Path(java_home_path) / 'bin') + os.pathsep + env.get('PATH', '')
+        proc = subprocess.run(['java', '-version'], capture_output=True, text=True, env=env)
+        out = proc.stderr or proc.stdout or ''
+        # Match formats: "1.8.0_", "11.", "17.", "21."
+        m = re.search(r'version\s+"(\d+)(?:\.(\d+))?', out)
+        if m:
+            major = int(m.group(1))
+            if major == 1:
+                # Java 8 reports as 1.8
+                minor = int(m.group(2) or 0)
+                return 8 if minor == 8 else major
+            return major
+    except Exception:
+        pass
+    return 0
 
 def extract_repo_name(repo_url: str) -> str:
     u = repo_url.strip()
@@ -335,6 +372,7 @@ def main():
     ap.add_argument('--artifactory-url', default='https://artifactory.org.com/artifactory', help='Artifactory base URL')
     ap.add_argument('--max-workers', type=int, default=10, help='Parallel workers')
     ap.add_argument('--temp-dir', help='Temporary directory root')
+    ap.add_argument('--java-home-override', help='Optional JAVA_HOME override path to use for Gradle invocation')
 
     args = ap.parse_args()
     repos: List[str] = []
@@ -351,7 +389,7 @@ def main():
     temp_root = Path(args.temp_dir) if args.temp_dir else Path(tempfile.gettempdir())
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root) for r in repos]
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 
