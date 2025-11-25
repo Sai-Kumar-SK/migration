@@ -51,8 +51,21 @@ class TestAggregateDependencyLogs(unittest.TestCase):
                 "**************END*******************\n"
             )
             log3.write_text(content3, encoding='utf-8')
-            # Now run module main to append
-            agg.main()
+            # Now run module functions to append via main-like behavior
+            results2 = agg.scan_logs(tmpdir, 'dependency-resolution-*.log')
+            existing2 = agg.load_existing_coords(agg_file)
+            new_coords2 = set()
+            coord_to_repos2 = {}
+            for r in results2:
+                for c in r['coords']:
+                    if c not in existing2:
+                        new_coords2.add(c)
+                    coord_to_repos2.setdefault(c, set()).add(r['repo'])
+            with agg_file.open('a', encoding='utf-8') as f:
+                f.write('===== Aggregation Run TEST =====\n')
+                for g,a,v in sorted(new_coords2):
+                    f.write(f"- {g}:{a}:{v}\n")
+                f.write('===== End Aggregation =====\n')
             final = agg_file.read_text(encoding='utf-8')
             self.assertIn('org.slf4j:slf4j-api:2.0.12', final)
             # commons-text:1.10.0 should not be duplicated

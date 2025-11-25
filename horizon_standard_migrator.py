@@ -69,6 +69,10 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
     if settings:
         ok = append_repositories_to_settings(settings, artifactory_url)
         result['steps'].append({'settings_updated': ok, 'file': settings})
+
+        # Remove PlasmaNexus allprojects block if present
+        clean_res = remove_plasma_nexus_block(settings)
+        result['steps'].append({'plasma_nexus_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0)})
     else:
         result['steps'].append({'settings_updated': False, 'error': 'settings.gradle not found'})
 
@@ -192,6 +196,54 @@ def extract_repo_name(repo_url: str) -> str:
     if name.endswith('.git'):
         name = name[:-4]
     return name or 'repo'
+
+def remove_plasma_nexus_block(settings_file: str) -> dict:
+    """Remove gradle.allprojects { ... PlasmaNexus ... } block from settings.gradle.
+
+    Returns dict with keys: removed (bool), removed_bytes (int), error (optional)
+    """
+    res = {'removed': False, 'removed_bytes': 0}
+    try:
+        p = Path(settings_file)
+        if not p.exists():
+            return res
+        content = p.read_text(encoding='utf-8')
+        marker_idx = content.find('ext.PlasmaNexus')
+        if marker_idx == -1:
+            return res
+        # Find the preceding allprojects start
+        ap_matches = list(re.finditer(r'(?:gradle\.)?allprojects\s*\{', content[:marker_idx]))
+        if not ap_matches:
+            return res
+        start_span = ap_matches[-1].span()
+        start_idx = start_span[0]
+        # Find position of the opening brace '{' from this match
+        brace_start = content.find('{', start_idx)
+        if brace_start == -1:
+            return res
+        # Walk to find matching closing brace
+        depth = 0
+        end_idx = brace_start
+        for i in range(brace_start, len(content)):
+            c = content[i]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        if depth != 0:
+            return res
+        # Remove block
+        new_content = content[:start_idx] + content[end_idx+1:]
+        res['removed_bytes'] = len(content) - len(new_content)
+        p.write_text(new_content, encoding='utf-8')
+        res['removed'] = True
+        return res
+    except Exception as e:
+        res['error'] = str(e)
+        return res
 
 def main():
     ap = argparse.ArgumentParser(description='Horizon Standard Gradle Migration (prepend settings + update wrapper)')
