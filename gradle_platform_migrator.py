@@ -8,8 +8,9 @@ from settings_template import get_version_catalog_settings_template
 class GradlePlatformMigrator:
     """Handles migration for Gradle Platform projects (with libs.versions.toml)"""
     
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str, verbose: bool = False):
         self.project_root = Path(project_root)
+        self.verbose = verbose
         self.libs_versions_toml = self.project_root / "gradle" / "libs.versions.toml"
         self.buildsrc_build_gradle = self.project_root / "buildSrc" / "build.gradle"
         self.buildsrc_settings_gradle = self.project_root / "buildSrc" / "settings.gradle"
@@ -165,7 +166,8 @@ class GradlePlatformMigrator:
             if self.buildsrc_settings_gradle.exists():
                 result['exists'] = True
                 result['message'] = "buildSrc/settings.gradle found"
-                print(f"⚠️  buildSrc/settings.gradle found at: {self.buildsrc_settings_gradle}")
+                if self.verbose:
+                    print(f"buildSrc/settings.gradle found at: {self.buildsrc_settings_gradle}")
             else:
                 result['message'] = "buildSrc/settings.gradle not found"
         
@@ -228,7 +230,8 @@ class GradlePlatformMigrator:
     
     def run_gradle_platform_migration(self) -> Dict:
         """Run complete Gradle Platform migration."""
-        print("\n=== Starting Gradle Platform Migration ===")
+        if self.verbose:
+            print("\n=== Starting Gradle Platform Migration ===")
         
         results = {
             'libs_versions_updated': None,
@@ -243,33 +246,40 @@ class GradlePlatformMigrator:
         }
         
         # Step 1: Update wrapper
-        print("\n1. Updating gradle-wrapper.properties...")
+        if self.verbose:
+            print("\n1. Updating gradle-wrapper.properties...")
         wrapper_path = str(self.project_root / 'gradle' / 'wrapper' / 'gradle-wrapper.properties')
         wr = update_gradle_wrapper(wrapper_path)
         results['wrapper_updated'] = wr
         
         # Step 2: Update libs.versions.toml
-        print("\n1. Updating libs.versions.toml...")
+        if self.verbose:
+            print("\n1. Updating libs.versions.toml...")
         results['libs_versions_updated'] = self.update_libs_versions_toml()
         
         # Step 3: Update buildSrc/build.gradle
-        print("\n2. Updating buildSrc/build.gradle...")
+        if self.verbose:
+            print("\n2. Updating buildSrc/build.gradle...")
         results['buildsrc_build_updated'] = self.update_buildsrc_build_gradle()
         
         # Step 4: Update buildSrc lib groovy plugin ids
-        print("\n3. Updating buildSrc lib groovy plugin ids...")
+        if self.verbose:
+            print("\n3. Updating buildSrc lib groovy plugin ids...")
         results['buildsrc_libs_updated'] = self.update_lib_groovy_plugin_ids()
         
         # Step 5: Replace buildSrc/settings.gradle with provided template
-        print("\n4. Replacing buildSrc/settings.gradle with template...")
+        if self.verbose:
+            print("\n4. Replacing buildSrc/settings.gradle with template...")
         results['buildsrc_settings_replaced'] = self.replace_buildsrc_settings_with_template()
         
         # Step 6: Check buildSrc/settings.gradle presence
-        print("\n5. Checking buildSrc/settings.gradle...")
+        if self.verbose:
+            print("\n5. Checking buildSrc/settings.gradle...")
         results['buildsrc_settings_checked'] = self.check_buildsrc_settings_gradle()
         
         # Step 7: Validate and clean root settings.gradle
-        print("\n6. Validating root settings.gradle...")
+        if self.verbose:
+            print("\n6. Validating root settings.gradle...")
         results['root_settings_validated'] = self.clean_root_settings_gradle()
         
         # Check overall success
@@ -282,10 +292,11 @@ class GradlePlatformMigrator:
         
         results['success'] = all_success
         
-        if all_success:
-            print("\n✅ Gradle Platform migration completed successfully!")
-        else:
-            print("\n❌ Gradle Platform migration completed with issues")
+        if self.verbose:
+            if all_success:
+                print("\nGradle Platform migration completed successfully")
+            else:
+                print("\nGradle Platform migration completed with issues")
         
         return results
 
