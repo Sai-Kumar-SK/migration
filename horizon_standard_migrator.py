@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Optional
 
 from gradle_parser import GradleProjectParser
-from settings_template import append_repositories_to_settings
+from settings_template import append_repositories_to_settings, get_version_catalog_settings_template
 from wrapper_updater import update_gradle_wrapper
 import platform
 import tempfile
@@ -104,8 +104,36 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     gp = GradleProjectParser(str(work_dir))
     gp.find_all_gradle_files()
     is_platform = gp.detect_gradle_platform()
+    libs_toml_exists = (work_dir / 'gradle' / 'libs.versions.toml').exists()
     if is_platform:
-        out['details'] = {'message': 'gradle_platform detected; awaiting platform flow'}
+        pm = GradlePlatformMigrator(str(work_dir))
+        plat = pm.run_gradle_platform_migration()
+        out['details'] = plat
+        if plat.get('success'):
+            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
+            out['details']['verification'] = {'success': v_ok, 'message': v_msg}
+            if not v_ok:
+                out['success'] = False
+                out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                return out
+            c_ok, c_msg = commit_push(work_dir, commit_message)
+            out['success'] = c_ok
+            out['details']['commit'] = c_msg
+        return out
+    elif libs_toml_exists:
+        # Version catalog present but not plasma; run catalog-only adjustments
+        cat = catalog_non_plasma_migration(work_dir)
+        out['details'] = cat
+        if cat.get('success'):
+            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
+            out['details']['verification'] = {'success': v_ok, 'message': v_msg}
+            if not v_ok:
+                out['success'] = False
+                out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                return out
+            c_ok, c_msg = commit_push(work_dir, commit_message)
+            out['success'] = c_ok
+            out['details']['commit'] = c_msg
         return out
     # Standard migration steps
     mig = standard_migration(work_dir, artifactory_url)
@@ -122,6 +150,43 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         out['success'] = c_ok
         out['details']['commit'] = c_msg
     return out
+
+def catalog_non_plasma_migration(work_dir: Path) -> dict:
+    """Perform minimal changes for repos with libs.versions.toml but no plasmaGradlePlugins."""
+    result = {'success': False, 'steps': [], 'errors': []}
+    try:
+        # Update wrapper
+        wrapper_path = work_dir / 'gradle' / 'wrapper' / 'gradle-wrapper.properties'
+        if wrapper_path.exists():
+            wr = update_gradle_wrapper(str(wrapper_path))
+            result['steps'].append({'wrapper_updated': wr.get('success', False), 'old_url': wr.get('old_url'), 'new_url': wr.get('new_url'), 'file': str(wrapper_path)})
+        else:
+            result['steps'].append({'wrapper_updated': False, 'error': 'gradle-wrapper.properties not found'})
+        
+        # Replace buildSrc/settings.gradle with version catalog template if provided
+        tpl = get_version_catalog_settings_template()
+        buildsrc_settings = work_dir / 'buildSrc' / 'settings.gradle'
+        if tpl and tpl.strip():
+            buildsrc_settings.parent.mkdir(parents=True, exist_ok=True)
+            buildsrc_settings.write_text(tpl, encoding='utf-8')
+            result['steps'].append({'buildsrc_settings_replaced': True, 'file': str(buildsrc_settings)})
+        else:
+            result['steps'].append({'buildsrc_settings_replaced': False, 'message': 'VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE empty; skipped'})
+        
+        # Clean root settings.gradle to be minimal
+        pm = GradlePlatformMigrator(str(work_dir))
+        clean = pm.clean_root_settings_gradle()
+        result['steps'].append({'root_settings_cleaned': clean.get('valid', False), 'file': str(work_dir / 'settings.gradle')})
+        
+        result['success'] = all(
+            s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps']
+        ) and all(
+            s.get('root_settings_cleaned', True) if 'root_settings_cleaned' in s else True for s in result['steps']
+        )
+        return result
+    except Exception as e:
+        result['errors'].append(str(e))
+        return result
 
 def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_override: Optional[str] = None) -> Tuple[bool, str]:
     """Run Gradle to verify dependencies resolve successfully.
@@ -147,6 +212,12 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         version = parse_gradle_version_from_wrapper(work_dir)
         java_home = java_home_override if java_home_override else select_java_home_for_gradle_version(version)
         env = os.environ.copy()
+        # Ensure Gradle sees user-level properties (~/.gradle/gradle.properties)
+        user_home = Path.home()
+        env['GRADLE_USER_HOME'] = str(user_home / '.gradle')
+        env['HOME'] = str(user_home)
+        if platform.system().lower().startswith('win'):
+            env['USERPROFILE'] = str(user_home)
         if java_home:
             env['JAVA_HOME'] = java_home
             env['PATH'] = str(Path(java_home) / 'bin') + os.pathsep + env.get('PATH', '')

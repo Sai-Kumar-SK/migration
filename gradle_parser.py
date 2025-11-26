@@ -49,11 +49,6 @@ class GradleProjectParser:
                 if 'plasmaGradlePlugins' in versions_section.group(1):
                     self.is_gradle_platform = True
                     return True
-                    
-            # Also check if it's using version catalog format
-            if '[versions]' in content and '[libraries]' in content:
-                self.is_gradle_platform = True
-                return True
                 
         except Exception as e:
             print(f"Error reading libs.versions.toml: {e}")

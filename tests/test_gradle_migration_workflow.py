@@ -21,6 +21,8 @@ class TestGradleMigrationWorkflow(unittest.TestCase):
             (root / 'settings.gradle').write_text("rootProject.name='demo'\ninclude 'app'")
             (root / 'gradle').mkdir()
             (root / 'gradle' / 'libs.versions.toml').write_text('[versions]\nplasmaGradlePlugins="1.0.0"\n[libraries]\n')
+            (root / 'gradle' / 'wrapper').mkdir()
+            (root / 'gradle' / 'wrapper' / 'gradle-wrapper.properties').write_text('distributionUrl=https\://services.gradle.org/distributions/gradle-6.8.3-all.zip')
             (root / 'buildSrc').mkdir()
             (root / 'buildSrc' / 'build.gradle').write_text('dependencies { implementation libs.plugin.publishing-nexus }')
             workflow = GradleMigrationWorkflow(str(root))

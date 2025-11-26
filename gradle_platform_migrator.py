@@ -2,6 +2,8 @@ import re
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from wrapper_updater import update_gradle_wrapper
+from settings_template import get_version_catalog_settings_template
 
 class GradlePlatformMigrator:
     """Handles migration for Gradle Platform projects (with libs.versions.toml)"""
@@ -14,12 +16,11 @@ class GradlePlatformMigrator:
         self.root_settings_gradle = self.project_root / "settings.gradle"
         
     def update_libs_versions_toml(self) -> Dict:
-        """Update libs.versions.toml file with Artifactory plugins and remove Nexus plugins."""
+        """Replace repositories-nexus plugin with repositories-artifactory if present."""
         result = {
             'success': False,
             'file_path': str(self.libs_versions_toml),
-            'artifactory_plugins_added': [],
-            'nexus_plugins_removed': [],
+            'replaced': False,
             'changes_made': False,
             'errors': []
         }
@@ -34,48 +35,26 @@ class GradlePlatformMigrator:
             
             original_content = content
             
-            # Define required Artifactory plugins
-            artifactory_plugins = {
-                'plugin-publishing-artifactory': 'ops.plasma.publishing-artifactory:ops.plasma.publishing-artifactory.gradle.plugin',
-                'plugin-repositories-artifactory': 'ops.plasma.repositories-artifactory:ops.plasma.repositories-artifactory.gradle.plugin'
-            }
-            
-            # Define Nexus plugins to remove
-            nexus_plugins = {
-                'plugin-publishing-nexus': 'ops.plasma.publishing-nexus:ops.plasma.publishing-nexus.gradle.plugin',
-                'plugin-repositories-nexus': 'ops.plasma.repositories-nexus:ops.plasma.repositories-nexus.gradle.plugin'
-            }
-            
-            # Check if we're in [libraries] section
+            # Check [libraries] section
             libraries_section_match = re.search(r'\[libraries\](.*?)(?=\[|\Z)', content, re.DOTALL)
             if not libraries_section_match:
                 result['errors'].append("[libraries] section not found in libs.versions.toml")
                 return result
             
             libraries_section = libraries_section_match.group(1)
-            
-            # Remove Nexus plugins
-            for plugin_key, plugin_module in nexus_plugins.items():
-                # Pattern to match the plugin declaration
-                pattern = rf'{re.escape(plugin_key)}\s*=\s*\{{\s*module\s*=\s*["\']{re.escape(plugin_module)}["\']\s*,\s*versions\.ref\s*=\s*["\']plasmaGradlePlugins["\']\s*\}}'
-                
-                if re.search(pattern, libraries_section, re.MULTILINE):
-                    # Remove the plugin
-                    libraries_section = re.sub(pattern + r'\s*\n?', '', libraries_section)
-                    result['nexus_plugins_removed'].append(plugin_key)
-                    result['changes_made'] = True
-            
-            # Add Artifactory plugins if not present
-            for plugin_key, plugin_module in artifactory_plugins.items():
-                # Check if plugin already exists
-                pattern = rf'{re.escape(plugin_key)}\s*='
-                if not re.search(pattern, libraries_section):
-                    # Add the plugin at the end of libraries section
-                    new_plugin = f'{plugin_key} = {{ module = "{plugin_module}", versions.ref = "plasmaGradlePlugins" }}'
-                    libraries_section = libraries_section.rstrip() + '\n' + new_plugin + '\n'
-                    result['artifactory_plugins_added'].append(plugin_key)
-                    result['changes_made'] = True
-            
+            # Replace repositories-nexus entry only if present
+            nexus_key = 'plugin-repositories-nexus'
+            art_key = 'plugin-repositories-artifactory'
+            nexus_module = 'ops.plasma.repositories-nexus:ops.plasma.repositories-nexus.gradle.plugin'
+            art_module = 'ops.plasma.repositories-artifactory:ops.plasma.repositories-artifactory.gradle.plugin'
+            pattern = rf'{re.escape(nexus_key)}\s*=\s*\{{\s*module\s*=\s*["\']{re.escape(nexus_module)}["\']\s*,\s*version\.ref\s*=\s*["\']plasmaGradlePlugins["\']\s*\}}'
+            pattern_alt = rf'{re.escape(nexus_key)}\s*=\s*\{{\s*module\s*=\s*["\']{re.escape(nexus_module)}["\']\s*,\s*versions\.ref\s*=\s*["\']plasmaGradlePlugins["\']\s*\}}'
+            if re.search(pattern, libraries_section) or re.search(pattern_alt, libraries_section):
+                libraries_section = re.sub(pattern, f'{art_key} = {{ module = "{art_module}", version.ref = "plasmaGradlePlugins" }}', libraries_section)
+                libraries_section = re.sub(pattern_alt, f'{art_key} = {{ module = "{art_module}", versions.ref = "plasmaGradlePlugins" }}', libraries_section)
+                result['replaced'] = True
+                result['changes_made'] = True
+
             # Update the content
             if result['changes_made']:
                 new_content = content[:libraries_section_match.start()] + '[libraries]' + libraries_section
@@ -98,7 +77,7 @@ class GradlePlatformMigrator:
         return result
     
     def update_buildsrc_build_gradle(self) -> Dict:
-        """Update buildSrc/build.gradle to replace Nexus plugins with Artifactory plugins."""
+        """Replace implementation libs.plugin.repositories.nexus with .artifactory if found."""
         result = {
             'success': False,
             'file_path': str(self.buildsrc_build_gradle),
@@ -118,12 +97,6 @@ class GradlePlatformMigrator:
             
             original_content = content
             
-            # Define plugin replacements
-            plugin_replacements = {
-                'libs.plugin.publishing-nexus': 'libs.plugin.publishing-artifactory',
-                'libs.plugin.repositories-nexus': 'libs.plugin.repositories-artifactory'
-            }
-            
             # Find dependencies block
             dependencies_match = re.search(r'dependencies\s*\{([^}]*)\}', content, re.DOTALL)
             if not dependencies_match:
@@ -131,14 +104,16 @@ class GradlePlatformMigrator:
                 return result
             
             dependencies_block = dependencies_match.group(1)
-            
-            # Replace Nexus plugins with Artifactory plugins
-            for nexus_plugin, artifactory_plugin in plugin_replacements.items():
-                if nexus_plugin in dependencies_block:
-                    # Replace the plugin
-                    dependencies_block = dependencies_block.replace(nexus_plugin, artifactory_plugin)
-                    result['nexus_replaced'].append(nexus_plugin)
-                    result['artifactory_added'].append(artifactory_plugin)
+            # Replace repositories nexus forms
+            pat_forms = [
+                ('libs.plugin.repositories-nexus', 'libs.plugin.repositories-artifactory'),
+                ('libs.plugin.repositories.nexus', 'libs.plugin.repositories.artifactory')
+            ]
+            for old, new in pat_forms:
+                if old in dependencies_block:
+                    dependencies_block = dependencies_block.replace(old, new)
+                    result['nexus_replaced'].append(old)
+                    result['artifactory_added'].append(new)
                     result['changes_made'] = True
             
             # If repositories-nexus was not found but we have publishing-nexus, 
@@ -170,7 +145,7 @@ class GradlePlatformMigrator:
                 result['success'] = True
                 result['message'] = "buildSrc/build.gradle updated successfully"
             else:
-                result['message'] = "No changes needed in buildSrc/build.gradle"
+                result['message'] = "repositories-nexus implementation not found; skipped"
                 result['success'] = True
             
         except Exception as e:
@@ -258,32 +233,50 @@ class GradlePlatformMigrator:
         results = {
             'libs_versions_updated': None,
             'buildsrc_build_updated': None,
+            'wrapper_updated': None,
             'buildsrc_settings_checked': None,
             'root_settings_validated': None,
+            'buildsrc_libs_updated': None,
+            'buildsrc_settings_replaced': None,
             'success': False,
             'errors': []
         }
         
-        # Step 1: Update libs.versions.toml
+        # Step 1: Update wrapper
+        print("\n1. Updating gradle-wrapper.properties...")
+        wrapper_path = str(self.project_root / 'gradle' / 'wrapper' / 'gradle-wrapper.properties')
+        wr = update_gradle_wrapper(wrapper_path)
+        results['wrapper_updated'] = wr
+        
+        # Step 2: Update libs.versions.toml
         print("\n1. Updating libs.versions.toml...")
         results['libs_versions_updated'] = self.update_libs_versions_toml()
         
-        # Step 2: Update buildSrc/build.gradle
+        # Step 3: Update buildSrc/build.gradle
         print("\n2. Updating buildSrc/build.gradle...")
         results['buildsrc_build_updated'] = self.update_buildsrc_build_gradle()
         
-        # Step 3: Check buildSrc/settings.gradle
-        print("\n3. Checking buildSrc/settings.gradle...")
+        # Step 4: Update buildSrc lib groovy plugin ids
+        print("\n3. Updating buildSrc lib groovy plugin ids...")
+        results['buildsrc_libs_updated'] = self.update_lib_groovy_plugin_ids()
+        
+        # Step 5: Replace buildSrc/settings.gradle with provided template
+        print("\n4. Replacing buildSrc/settings.gradle with template...")
+        results['buildsrc_settings_replaced'] = self.replace_buildsrc_settings_with_template()
+        
+        # Step 6: Check buildSrc/settings.gradle presence
+        print("\n5. Checking buildSrc/settings.gradle...")
         results['buildsrc_settings_checked'] = self.check_buildsrc_settings_gradle()
         
-        # Step 4: Validate root settings.gradle
-        print("\n4. Validating root settings.gradle...")
-        results['root_settings_validated'] = self.validate_root_settings_gradle()
+        # Step 7: Validate and clean root settings.gradle
+        print("\n6. Validating root settings.gradle...")
+        results['root_settings_validated'] = self.clean_root_settings_gradle()
         
         # Check overall success
         all_success = all([
             results['libs_versions_updated'] and results['libs_versions_updated']['success'],
             results['buildsrc_build_updated'] and results['buildsrc_build_updated']['success'],
+            results['wrapper_updated'] and results['wrapper_updated']['success'],
             results['root_settings_validated'] and results['root_settings_validated']['valid']
         ])
         
@@ -295,6 +288,102 @@ class GradlePlatformMigrator:
             print("\n❌ Gradle Platform migration completed with issues")
         
         return results
+
+    def update_lib_groovy_plugin_ids(self) -> Dict:
+        result = {'success': True, 'files_updated': [], 'skipped': []}
+        try:
+            groovy_dir = self.project_root / 'buildSrc' / 'src' / 'main' / 'groovy'
+            if not groovy_dir.exists():
+                return result
+            for f in groovy_dir.glob('*.lib.groovy'):
+                content = f.read_text(encoding='utf-8')
+                if "id 'ops.plasma.repositories-nexus'" in content:
+                    new_content = content.replace("id 'ops.plasma.repositories-nexus'", "id 'ops.plasma.repositories-artifactory'")
+                    f.write_text(new_content, encoding='utf-8')
+                    result['files_updated'].append(str(f))
+                else:
+                    result['skipped'].append(str(f))
+            return result
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def replace_buildsrc_settings_with_template(self) -> Dict:
+        result = {'success': False, 'replaced': False, 'errors': []}
+        try:
+            tpl = get_version_catalog_settings_template()
+            target = self.project_root / 'buildSrc' / 'settings.gradle'
+            if tpl and tpl.strip():
+                target.write_text(tpl, encoding='utf-8')
+                result['success'] = True
+                result['replaced'] = True
+            else:
+                result['errors'].append('VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE not provided')
+            return result
+        except Exception as e:
+            result['errors'].append(str(e))
+            return result
+
+    def clean_root_settings_gradle(self) -> Dict:
+        result = {'valid': False, 'file_path': str(self.root_settings_gradle), 'errors': []}
+        try:
+            if not self.root_settings_gradle.exists():
+                result['errors'].append('root settings.gradle not found')
+                return result
+            content = self.root_settings_gradle.read_text(encoding='utf-8')
+            content = self._remove_block(content, 'pluginManagement')
+            content = self._remove_block(content, 'dependencyResolutionManagement')
+            content = self._remove_allprojects(content)
+            self.root_settings_gradle.write_text(content, encoding='utf-8')
+            # Validate minimal
+            lines = [l.strip() for l in content.strip().split('\n') if l.strip()]
+            valid = all(not (l.startswith('pluginManagement') or l.startswith('dependencyResolutionManagement') or 'allprojects' in l) for l in lines)
+            result['valid'] = valid
+            return result
+        except Exception as e:
+            result['errors'].append(str(e))
+            return result
+
+    def _remove_block(self, content: str, block_name: str) -> str:
+        m = re.search(rf'{block_name}\s*\{{', content)
+        if not m:
+            return content
+        start = m.start()
+        brace = content.find('{', start)
+        depth = 0
+        end_idx = None
+        for i in range(brace, len(content)):
+            ch = content[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        if end_idx is not None:
+            return content[:start] + content[end_idx+1:]
+        return content
+
+    def _remove_allprojects(self, content: str) -> str:
+        m = re.search(r'(?:gradle\.)?allprojects\s*\{', content, re.IGNORECASE)
+        if not m:
+            return content
+        start = m.start()
+        brace = content.find('{', start)
+        depth = 0
+        end_idx = None
+        for i in range(brace, len(content)):
+            ch = content[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        if end_idx is not None:
+            return content[:start] + content[end_idx+1:]
+        return content
 
 
 def main():

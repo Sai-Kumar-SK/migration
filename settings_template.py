@@ -27,11 +27,16 @@ repositories {
 }
 '''
 
+VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE = ""
+
 def get_settings_template(artifactory_url: str = "https://artifactory.org.com") -> str:
     """Get the Groovy settings.gradle template (no Kotlin)."""
     template = SETTINGS_GRADLE_TEMPLATE
     template = template.replace('https://artifactory.org.com', artifactory_url)
     return template
+
+def get_version_catalog_settings_template() -> str:
+    return VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE
 
 def append_repositories_to_settings(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
     """Append Artifactory repositories to settings.gradle file.
