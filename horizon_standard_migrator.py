@@ -12,8 +12,8 @@ from typing import List, Tuple, Optional
 from gradle_parser import GradleProjectParser
 from settings_template import append_repositories_to_settings, get_version_catalog_settings_template
 from wrapper_updater import update_gradle_wrapper
+from gradle_platform_migrator import GradlePlatformMigrator
 import platform
-import tempfile
 import re
 
 def clone_repo(repo_url: str, work_dir: Path) -> Tuple[bool, str]:
@@ -193,20 +193,23 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
 
     Prefers Gradle wrapper if present. Falls back to system Gradle.
     """
+    java_home: Optional[str] = None
     try:
         is_windows = platform.system().lower().startswith('win')
         gradlew_bat = work_dir / 'gradlew.bat'
         gradlew_sh = work_dir / 'gradlew'
+        init_path = work_dir / 'initResolveAll.gradle'
+        init_script = build_init_script()
+        init_path.write_text(init_script, encoding='utf-8')
         if gradlew_sh.exists():
             if is_windows:
-                # Prefer running Unix wrapper via bash on Windows when available
-                cmd = ['bash', '-lc', './gradlew dependencies --refresh-dependencies --no-daemon']
+                cmd = ['bash', '-lc', f'./gradlew -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
             else:
-                cmd = [str(gradlew_sh), 'dependencies', '--refresh-dependencies', '--no-daemon']
+                cmd = [str(gradlew_sh), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         elif is_windows and gradlew_bat.exists():
-            cmd = [str(gradlew_bat), 'dependencies', '--refresh-dependencies', '--no-daemon']
+            cmd = [str(gradlew_bat), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         else:
-            cmd = ['gradle', 'dependencies', '--refresh-dependencies', '--no-daemon']
+            cmd = ['gradle', '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
 
         # Build environment with selected JAVA_HOME
         version = parse_gradle_version_from_wrapper(work_dir)
@@ -232,7 +235,7 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
 
         combined = (proc.stdout or '') + "\n" + (proc.stderr or '')
         # Summary of unresolved dependencies
-        patterns = ['Could not resolve', 'Could not find', 'Could not get resource', 'UNRESOLVED', 'Failed to download']
+        patterns = ['UNRESOLVED |', 'Could not resolve', 'Could not find', 'Could not get resource', 'Failed to download']
         unresolved = []
         seen = set()
         for line in combined.splitlines():
@@ -287,6 +290,55 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
             return False, str(e) + f". Log: {log_file}"
         except Exception:
             return False, str(e)
+
+def build_init_script() -> str:
+    return (
+        "initscript { }\n"+
+        "gradle.beforeProject { p -> }\n"+
+        "allprojects {\n"+
+        "    tasks.register('resolveAllDeps') {\n"+
+        "        doLast {\n"+
+        "            def prj = project.path\n"+
+        "            def unresolved = []\n"+
+        "            def collectUnresolved = { rr ->\n"+
+        "                try {\n"+
+        "                    rr.root.dependencies.each { d ->\n"+
+        "                        if (d instanceof org.gradle.api.artifacts.result.UnresolvedDependencyResult) {\n"+
+        "                            def sel = d.attempted\n"+
+        "                            def cause = d.failure?.message ?: ''\n"+
+        "                            println \"UNRESOLVED | ${prj} | UNKNOWN | ${sel.group}:${sel.name}:${sel.version} | ${cause}\"\n"+
+        "                        }\n"+
+        "                    }\n"+
+        "                } catch (Throwable t) { }\n"+
+        "            }\n"+
+        "            configurations.findAll { it.canBeResolved }.each { cfg ->\n"+
+        "                try {\n"+
+        "                    def rr = cfg.incoming.resolutionResult\n"+
+        "                    collectUnresolved(rr)\n"+
+        "                } catch (Throwable t) {\n"+
+        "                    println \"UNRESOLVED | ${prj} | ${cfg.name} | UNKNOWN | ${t.message}\"\n"+
+        "                }\n"+
+        "                try { cfg.resolve() } catch (Throwable t) {\n"+
+        "                    println \"UNRESOLVED | ${prj} | ${cfg.name} | UNKNOWN | ${t.message}\"\n"+
+        "                }\n"+
+        "            }\n"+
+        "            if (project.buildscript?.configurations) {\n"+
+        "                project.buildscript.configurations.findAll { it.canBeResolved }.each { bc ->\n"+
+        "                    try {\n"+
+        "                        def rr2 = bc.incoming.resolutionResult\n"+
+        "                        collectUnresolved(rr2)\n"+
+        "                    } catch (Throwable t) {\n"+
+        "                        println \"UNRESOLVED | ${prj} | buildscript:${bc.name} | UNKNOWN | ${t.message}\"\n"+
+        "                    }\n"+
+        "                    try { bc.resolve() } catch (Throwable t) {\n"+
+        "                        println \"UNRESOLVED | ${prj} | buildscript:${bc.name} | UNKNOWN | ${t.message}\"\n"+
+        "                    }\n"+
+        "                }\n"+
+        "            }\n"+
+        "        }\n"+
+        "    }\n"+
+        "}\n"
+    )
 
 def parse_gradle_version_from_wrapper(work_dir: Path) -> str:
     try:
