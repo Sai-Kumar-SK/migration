@@ -6,7 +6,8 @@ from datetime import datetime
 
 def extract_coords(text: str):
     coords = set()
-    for m in re.finditer(r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)', text):
+    pattern = re.compile(r'^UNRESOLVED\s*\|\s*[^|]*\|\s*[^|]*\|\s*([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)\s*\|', re.MULTILINE)
+    for m in pattern.finditer(text):
         coords.add((m.group(1), m.group(2), m.group(3)))
     return coords
 
