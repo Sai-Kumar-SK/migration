@@ -236,23 +236,45 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         init_path = work_dir / 'initResolveAll.gradle'
         init_script = build_init_script()
         init_path.write_text(init_script, encoding='utf-8')
+        cache_dir = work_dir / 'gradle-cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        wrapper_user = os.environ.get('GRADLE_WRAPPER_USER') or os.environ.get('ARTIFACTORY_USER') or ''
+        wrapper_pass = os.environ.get('GRADLE_WRAPPER_PASSWORD') or os.environ.get('ARTIFACTORY_PASSWORD') or ''
+        if (not wrapper_user or not wrapper_pass):
+            try:
+                src_props = Path.home() / '.gradle' / 'gradle.properties'
+                if src_props.exists():
+                    t = src_props.read_text(encoding='utf-8', errors='ignore')
+                    m1 = re.search(r'(?m)^\s*(?:gradle\.wrapperUser|artifactory_user)\s*=\s*(.+)\s*$', t)
+                    m2 = re.search(r'(?m)^\s*(?:gradle\.wrapperPassword|artifactory_password)\s*=\s*(.+)\s*$', t)
+                    if m1:
+                        wrapper_user = wrapper_user or m1.group(1).strip()
+                    if m2:
+                        wrapper_pass = wrapper_pass or m2.group(1).strip()
+            except Exception:
+                pass
+        extra_props = []
+        if wrapper_user:
+            extra_props.append(f"-Dgradle.wrapperUser={wrapper_user}")
+        if wrapper_pass:
+            extra_props.append(f"-Dgradle.wrapperPassword={wrapper_pass}")
         if gradlew_sh.exists():
             if is_windows:
-                cmd = ['bash', '-lc', f'./gradlew -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
+                props_str = ' '.join(extra_props)
+                cmd = ['bash', '-lc', f'./gradlew {props_str} -g "{cache_dir}" -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
             else:
-                cmd = [str(gradlew_sh), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+                cmd = [str(gradlew_sh)] + extra_props + ['-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         elif is_windows and gradlew_bat.exists():
-            cmd = [str(gradlew_bat), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            cmd = [str(gradlew_bat)] + extra_props + ['-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         else:
-            cmd = ['gradle', '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            cmd = ['gradle'] + extra_props + ['-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
 
         # Build environment with selected JAVA_HOME
         version = parse_gradle_version_from_wrapper(work_dir)
         java_home = java_home_override if java_home_override else select_java_home_for_gradle_version(version)
         env = os.environ.copy()
-        # Ensure Gradle sees user-level properties (~/.gradle/gradle.properties)
+        # Keep OS home for any default resolution; rely on -g to set Gradle user home
         user_home = Path.home()
-        env['GRADLE_USER_HOME'] = str(user_home / '.gradle')
         env['HOME'] = str(user_home)
         if platform.system().lower().startswith('win'):
             env['USERPROFILE'] = str(user_home)
@@ -283,7 +305,11 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
 
         header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
         footer = "**************END*******************\n"
-        cmd_line = f"Command: {' '.join(cmd)}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
+        raw_cmd = ' '.join(cmd)
+        cmd_mask = re.sub(r'-Dgradle\.wrapperPassword=\S+', '-Dgradle.wrapperPassword=****', raw_cmd)
+        cmd_mask = re.sub(r'-Dartifactory_password=\S+', '-Dartifactory_password=****', cmd_mask)
+        cmd_mask = re.sub(r'-Dgradle\.wrapperUser=\S+', '-Dgradle.wrapperUser=****', cmd_mask)
+        cmd_line = f"Command: {cmd_mask}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
         summary = ''
         if unresolved:
             summary = "=== Summary of unresolved dependencies ===\n" + "\n".join(f"- {u}" for u in unresolved) + "\n\n"
