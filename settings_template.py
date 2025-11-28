@@ -1,3 +1,5 @@
+import re
+
 # Template for settings.gradle repository configuration
 # This template adds Artifactory repositories for dependency resolution
 
@@ -29,35 +31,46 @@ repositories {
 
 VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE = ""
 
-def get_settings_template(artifactory_url: str = "https://artifactory.org.com") -> str:
-    """Get the Groovy settings.gradle template (no Kotlin)."""
-    template = SETTINGS_GRADLE_TEMPLATE
-    template = template.replace('https://artifactory.org.com', artifactory_url)
-    return template
+STANDARD_SETTINGS_G6_TEMPLATE = '''
+// Artifactory repositories for dependency resolution (Gradle 6.x)
+repositories {
+    maven {
+        url = 'https://artifactory.org.com/artifactory/libs-release'
+        credentials {
+            username = project.findProperty("artifactory_user") ?: System.getProperty("gradle.wrapperUser")
+            password = project.findProperty("artifactory_password") ?: System.getProperty("gradle.wrapperPassword")
+        }
+        authentication {
+            basic(BasicAuthentication)
+        }
+    }
+    maven {
+        url = 'https://artifactory.org.com/artifactory/libs-snapshot'
+        credentials {
+            username = project.findProperty("artifactory_user") ?: System.getProperty("gradle.wrapperUser")
+            password = project.findProperty("artifactory_password") ?: System.getProperty("gradle.wrapperPassword")
+        }
+        authentication {
+            basic(BasicAuthentication)
+        }
+    }
+}
+'''
 
 def get_version_catalog_settings_template() -> str:
     return VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE
 
 def append_repositories_to_settings(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
-    """Append Artifactory repositories to settings.gradle file.
-    
-    Args:
-        settings_file: Path to settings.gradle file
-        artifactory_url: Base URL for Artifactory instance
-    
-    Returns:
-        True if successful, False otherwise
-    """
     try:
         # Get the appropriate template
-        template = get_settings_template(artifactory_url)
+        template = SETTINGS_GRADLE_TEMPLATE
         
         # Read existing content
         with open(settings_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
         # Check if Artifactory repositories already exist
-        if 'artifactory.org.com' in content:
+        if artifactory_url in content:
             print(f"Artifactory repositories already exist in {settings_file}")
             return False
             
@@ -93,6 +106,23 @@ def append_repositories_to_settings(settings_file: str, artifactory_url: str = "
         print(f"Successfully updated {settings_file} with Artifactory repositories")
         return True
         
+    except Exception as e:
+        print(f"Error updating {settings_file}: {e}")
+        return False
+
+def append_repositories_to_settings_g6(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
+    try:
+        template = STANDARD_SETTINGS_G6_TEMPLATE
+        with open(settings_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        if artifactory_url in content:
+            print(f"Artifactory repositories already exist in {settings_file}")
+            return False
+        new_content = template.strip() + '\n\n' + content
+        with open(settings_file, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+        print(f"Successfully updated {settings_file} with Artifactory repositories (G6)")
+        return True
     except Exception as e:
         print(f"Error updating {settings_file}: {e}")
         return False

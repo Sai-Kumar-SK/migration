@@ -45,15 +45,23 @@ def update_gradle_wrapper(wrapper_file: str, artifactory_base: str = 'https://ar
         new_url = f'{artifactory_base}/libs-release/com/baml/plat/gradle/wrapper/gradle-{version}-all.zip'
         # Properties file uses escaped colon in some generated files; Gradle supports unescaped https URL too.
         # To preserve style, replace ':' with '\:' if old_url used escapes.
-        if '\:' in old_url:
-            new_url_prop = new_url.replace(':', '\:')
+        if '\\:' in old_url:
+            new_url_prop = new_url.replace(':', '\\:')
         else:
             new_url_prop = new_url
 
         result['new_url'] = new_url
 
-        # Replace in content
-        new_content = re.sub(r'^(\s*distributionUrl\s*=\s*).+$', rf"\1{new_url_prop}", content, flags=re.MULTILINE)
+        # Replace in content preserving escaping and exact line formatting
+        line_match = re.search(r'^(\s*distributionUrl\s*=\s*).+$', content, flags=re.MULTILINE)
+        if not line_match:
+            result['errors'].append('distributionUrl line not found during replace')
+            return result
+        prefix = line_match.group(1)
+        start = line_match.start()
+        end = line_match.end()
+        new_line = prefix + new_url_prop
+        new_content = content[:start] + new_line + content[end:]
         p.write_text(new_content, encoding='utf-8')
 
         result['success'] = True

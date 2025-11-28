@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Optional
 
 from gradle_parser import GradleProjectParser
-from settings_template import append_repositories_to_settings, get_version_catalog_settings_template
+from settings_template import append_repositories_to_settings, append_repositories_to_settings_g6, get_version_catalog_settings_template
 from wrapper_updater import update_gradle_wrapper
 from gradle_platform_migrator import GradlePlatformMigrator
 import platform
@@ -67,21 +67,31 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
     structure = parser.get_project_structure()
     result = {'success': False, 'steps': []}
 
-    # 1. Settings.gradle prepend repositories
+    # 1. Settings.gradle cleanup then prepend repositories
     settings = structure.get('settings_gradle')
     if settings:
-        ok = append_repositories_to_settings(settings, artifactory_url)
-        result['steps'].append({'settings_updated': ok, 'file': settings})
-        print("Standard Step 2: settings.gradle " + ("updated" if ok else "update skipped or already present"))
-        if VERBOSE and ok:
-            print(f"  file: {settings}")
-
-        # Remove any gradle.allprojects { ... } block irrespective of contents
         clean_res = remove_plasma_nexus_block(settings)
         result['steps'].append({'allprojects_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0), 'removed_count': clean_res.get('removed_count', 0)})
         print("Standard Step 2: gradle.allprojects block " + ("removed" if clean_res.get('removed') else "not found"))
         if VERBOSE and clean_res.get('removed'):
             print(f"  removed_count: {clean_res.get('removed_count', 0)} removed_bytes: {clean_res.get('removed_bytes', 0)}")
+
+        version = parse_gradle_version_from_wrapper(work_dir)
+        use_g6 = False
+        try:
+            parts = [int(p) for p in (version.split('.') if version else [])]
+            major = parts[0] if parts else 0
+            use_g6 = (major <= 6) and clean_res.get('removed', False)
+        except Exception:
+            use_g6 = clean_res.get('removed', False)
+        if use_g6:
+            ok = append_repositories_to_settings_g6(settings, artifactory_url)
+        else:
+            ok = append_repositories_to_settings(settings, artifactory_url)
+        result['steps'].append({'settings_updated': ok, 'file': settings})
+        print("Standard Step 2: settings.gradle " + ("updated" if ok else "update skipped or already present"))
+        if VERBOSE and ok:
+            print(f"  file: {settings}")
     else:
         result['steps'].append({'settings_updated': False, 'error': 'settings.gradle not found'})
         print("Standard Step 2: settings.gradle not found")
@@ -102,7 +112,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
                         all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
     return result
 
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None) -> dict:
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     ok, msg = clone_repo(repo_url, work_dir)
@@ -136,6 +146,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if VERBOSE:
                 print(v_msg)
             print("Gradle Platform Step 3: dependency verification passed")
+            j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+            if j_res.get('updated_count', 0) > 0:
+                print("Gradle Platform Step 4: Jenkinsfile(s) updated")
+            else:
+                print("Gradle Platform Step 4: Jenkinsfile update skipped")
             c_ok, c_msg = commit_push(work_dir, commit_message)
             out['success'] = c_ok
             out['details']['commit'] = c_msg
@@ -156,6 +171,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if VERBOSE:
                 print(v_msg)
             print("Version Catalog Step 3: dependency verification passed")
+            j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+            if j_res.get('updated_count', 0) > 0:
+                print("Version Catalog Step 4: Jenkinsfile(s) updated")
+            else:
+                print("Version Catalog Step 4: Jenkinsfile update skipped")
             c_ok, c_msg = commit_push(work_dir, commit_message)
             out['success'] = c_ok
             out['details']['commit'] = c_msg
@@ -176,6 +196,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         if VERBOSE:
             print(v_msg)
         print("Standard Step 3: dependency verification passed")
+        j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        if j_res.get('updated_count', 0) > 0:
+            print("Standard Step 4: Jenkinsfile(s) updated")
+        else:
+            print("Standard Step 4: Jenkinsfile update skipped")
         c_ok, c_msg = commit_push(work_dir, commit_message)
         out['success'] = c_ok
         out['details']['commit'] = c_msg
@@ -495,6 +520,9 @@ def extract_repo_name(repo_url: str) -> str:
         name = name[:-4]
     return name or 'repo'
 
+def update_jenkinsfile_buildgroovy(work_dir: Path) -> dict:
+    return update_jenkinsfiles(work_dir, ['Jenkinsfile.build.groovy'])
+
 def remove_plasma_nexus_block(settings_file: str) -> dict:
     """Remove any gradle.allprojects { ... } block from settings.gradle, irrespective of contents.
 
@@ -557,6 +585,7 @@ def main():
     ap.add_argument('--max-workers', type=int, default=10, help='Parallel workers')
     ap.add_argument('--temp-dir', help='Temporary directory root')
     ap.add_argument('--java-home-override', help='Optional JAVA_HOME override path to use for Gradle invocation')
+    ap.add_argument('--jenkinsfiles', nargs='+', default=['Jenkinsfile.build.groovy'], help='Relative Jenkinsfile paths to update with env.GRADLE_PARAMS')
     ap.add_argument('--verbose', action='store_true', help='Enable verbose logging')
 
     args = ap.parse_args()
@@ -576,7 +605,7 @@ def main():
     temp_root = Path(args.temp_dir) if args.temp_dir else Path(tempfile.gettempdir())
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override) for r in repos]
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 
@@ -587,3 +616,33 @@ def main():
 
 if __name__ == '__main__':
     main()
+def update_jenkinsfiles(work_dir: Path, files: List[str]) -> dict:
+    res = {'updated_count': 0, 'updated_files': [], 'skipped_files': []}
+    try:
+        for rel in files:
+            p = work_dir / rel
+            if not p.exists():
+                res['skipped_files'].append(str(p))
+                continue
+            text = p.read_text(encoding='utf-8', errors='ignore')
+            if 'env.GRADLE_PARAMS' in text:
+                res['skipped_files'].append(str(p))
+                continue
+            lines = text.splitlines()
+            idx = None
+            for i, line in enumerate(lines):
+                if '@Library' in line:
+                    idx = i
+                    break
+            insert_line = "env.GRADLE_PARAMS = \"-Dgradle.wrapperUser=${ORG_GRADLE_PROJECT_artifactory_user} -Dgradle.wrapperPassword=${ORG_GRADLE_PROJECT_artifactory_password}\""
+            if idx is not None:
+                lines.insert(idx + 1, insert_line)
+            else:
+                lines.insert(0, insert_line)
+            p.write_text('\n'.join(lines), encoding='utf-8')
+            res['updated_count'] += 1
+            res['updated_files'].append(str(p))
+        return res
+    except Exception as e:
+        res['error'] = str(e)
+        return res
