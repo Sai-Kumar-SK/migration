@@ -119,7 +119,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
                         all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
     return result
 
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None) -> dict:
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     ok, msg = clone_repo(repo_url, work_dir)
@@ -148,7 +148,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
                 log.info("Gradle Platform: Jenkinsfile(s) updated")
             else:
                 log.info("Gradle Platform: Jenkinsfile update skipped")
-            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
+            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
             cleanup_after_verification(work_dir)
             if not v_ok:
@@ -174,7 +174,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
                 log.info("Version Catalog: Jenkinsfile(s) updated")
             else:
                 log.info("Version Catalog: Jenkinsfile update skipped")
-            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
+            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
             cleanup_after_verification(work_dir)
             if not v_ok:
@@ -201,7 +201,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         else:
             log.info("Standard: Jenkinsfile update skipped")
         # Verify dependency resolution before committing
-        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override)
+        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
         cleanup_after_verification(work_dir)
         if not v_ok:
@@ -260,7 +260,7 @@ def catalog_non_plasma_migration(work_dir: Path) -> dict:
         result['errors'].append(str(e))
         return result
 
-def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_override: Optional[str] = None) -> Tuple[bool, str]:
+def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_override: Optional[str] = None, use_cache: bool = True) -> Tuple[bool, str]:
     """Run Gradle to verify dependencies resolve successfully.
 
     Prefers Gradle wrapper if present. Falls back to system Gradle.
@@ -273,58 +273,40 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         init_path = work_dir / 'initResolveAll.gradle'
         init_script = build_init_script()
         init_path.write_text(init_script, encoding='utf-8')
-        cache_dir = work_dir / 'gradle-cache'
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        git_exclude = work_dir / '.git' / 'info' / 'exclude'
-        try:
-            if git_exclude.exists():
-                ex_text = git_exclude.read_text(encoding='utf-8', errors='ignore')
-                if 'gradle-cache/' not in ex_text:
-                    git_exclude.write_text(ex_text + '\ngradle-cache/\n', encoding='utf-8')
-        except Exception:
-            pass
-        wrapper_user = os.environ.get('GRADLE_WRAPPER_USER') or os.environ.get('ARTIFACTORY_USER') or ''
-        wrapper_pass = os.environ.get('GRADLE_WRAPPER_PASSWORD') or os.environ.get('ARTIFACTORY_PASSWORD') or ''
-        if (not wrapper_user or not wrapper_pass):
+        cache_dir = None
+        if use_cache:
+            cache_dir = work_dir / 'gradle-cache'
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            git_exclude = work_dir / '.git' / 'info' / 'exclude'
             try:
-                src_props = Path.home() / '.gradle' / 'gradle.properties'
-                if src_props.exists():
-                    t = src_props.read_text(encoding='utf-8', errors='ignore')
-                    m1 = re.search(r'(?m)^\s*(?:gradle\.wrapperUser|artifactory_user)\s*=\s*(.+)\s*$', t)
-                    m2 = re.search(r'(?m)^\s*(?:gradle\.wrapperPassword|artifactory_password)\s*=\s*(.+)\s*$', t)
-                    if m1:
-                        wrapper_user = wrapper_user or m1.group(1).strip()
-                    if m2:
-                        wrapper_pass = wrapper_pass or m2.group(1).strip()
+                if git_exclude.exists():
+                    ex_text = git_exclude.read_text(encoding='utf-8', errors='ignore')
+                    if 'gradle-cache/' not in ex_text:
+                        git_exclude.write_text(ex_text + '\ngradle-cache/\n', encoding='utf-8')
             except Exception:
                 pass
-        # Write credentials into cache-dir gradle.properties so wrapper reads them via -g
-        try:
-            dest_props = cache_dir / 'gradle.properties'
-            base = ''
-            src_p = Path.home() / '.gradle' / 'gradle.properties'
-            if src_p.exists():
-                base = src_p.read_text(encoding='utf-8', errors='ignore')
-            lines = []
-            if base:
-                lines.append(base)
-            if wrapper_user:
-                lines.append(f"systemProp.gradle.wrapperUser={wrapper_user}")
-            if wrapper_pass:
-                lines.append(f"systemProp.gradle.wrapperPassword={wrapper_pass}")
-            if lines:
-                dest_props.write_text('\n'.join(lines), encoding='utf-8')
-        except Exception:
-            pass
+        
         if gradlew_sh.exists():
             if is_windows:
-                cmd = ['bash', '-lc', f'./gradlew -g "{cache_dir}" -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
+                if use_cache and cache_dir:
+                    cmd = ['bash', '-lc', f'./gradlew -g "{cache_dir}" -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
+                else:
+                    cmd = ['bash', '-lc', f'./gradlew -I "{init_path}" resolveAllDeps --refresh-dependencies --no-configuration-cache --no-daemon --console=plain']
             else:
-                cmd = [str(gradlew_sh), '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+                if use_cache and cache_dir:
+                    cmd = [str(gradlew_sh), '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+                else:
+                    cmd = [str(gradlew_sh), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         elif is_windows and gradlew_bat.exists():
-            cmd = [str(gradlew_bat), '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            if use_cache and cache_dir:
+                cmd = [str(gradlew_bat), '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            else:
+                cmd = [str(gradlew_bat), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
         else:
-            cmd = ['gradle', '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            if use_cache and cache_dir:
+                cmd = ['gradle', '-g', str(cache_dir), '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
+            else:
+                cmd = ['gradle', '-I', str(init_path), 'resolveAllDeps', '--refresh-dependencies', '--no-configuration-cache', '--no-daemon', '--console=plain']
 
         # Build environment with selected JAVA_HOME
         version = parse_gradle_version_from_wrapper(work_dir)
@@ -343,9 +325,9 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
 
         # Build log file path
         tmp_dir = Path(tempfile.gettempdir())
-        # Extract repo name
         repo_name = extract_repo_name(repo_url)
-        log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
+        spk = extract_spk(repo_url)
+        log_file = tmp_dir / f"dependency-resolution-{spk}-{repo_name}.log"
 
         combined = (proc.stdout or '') + "\n" + (proc.stderr or '')
         # Summary of unresolved dependencies
@@ -360,13 +342,10 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
                     seen.add(key)
                     unresolved.append(key)
 
-        header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+        header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
         footer = "**************END*******************\n"
         raw_cmd = ' '.join(cmd)
-        cmd_mask = re.sub(r'-Dgradle\.wrapperPassword=\S+', '-Dgradle.wrapperPassword=****', raw_cmd)
-        cmd_mask = re.sub(r'-Dartifactory_password=\S+', '-Dartifactory_password=****', cmd_mask)
-        cmd_mask = re.sub(r'-Dgradle\.wrapperUser=\S+', '-Dgradle.wrapperUser=****', cmd_mask)
-        cmd_line = f"Command: {cmd_mask}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
+        cmd_line = f"Command: {raw_cmd}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
         summary = ''
         if unresolved:
             summary = "=== Summary of unresolved dependencies ===\n" + "\n".join(f"- {u}" for u in unresolved) + "\n\n"
@@ -388,8 +367,9 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         try:
             tmp_dir = Path(tempfile.gettempdir())
             repo_name = extract_repo_name(repo_url)
-            log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
-            header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+            spk = extract_spk(repo_url)
+            log_file = tmp_dir / f"dependency-resolution-{spk}-{repo_name}.log"
+            header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
             msg = 'Gradle/Gradle wrapper not found in repository'
             log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + msg + "\n" + footer, encoding='utf-8')
@@ -401,8 +381,9 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         try:
             tmp_dir = Path(tempfile.gettempdir())
             repo_name = extract_repo_name(repo_url)
-            log_file = tmp_dir / f"dependency-resolution-{repo_name}.log"
-            header = f"******************** {repo_name} DEPENDENCY RESOLUTION ***********************\n"
+            spk = extract_spk(repo_url)
+            log_file = tmp_dir / f"dependency-resolution-{spk}-{repo_name}.log"
+            header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
             log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + str(e) + "\n" + footer, encoding='utf-8')
             return False, str(e) + f". Log: {log_file}"
@@ -569,6 +550,28 @@ def extract_repo_name(repo_url: str) -> str:
         name = name[:-4]
     return name or 'repo'
 
+def extract_spk(repo_url: str) -> str:
+    u = repo_url.strip()
+    try:
+        if '@' in u and ':' in u:
+            # git@host:spk/repo.git
+            path = u.split(':', 1)[1]
+            parts = path.strip('/').split('/')
+            return parts[-2] if len(parts) >= 2 else 'org'
+        elif '://' in u:
+            # ssh://git@host/spk/repo.git or https://host/spk/repo.git
+            path = u.split('://', 1)[1]
+            # strip leading host and possible user@
+            if '/' in path:
+                path = path.split('/', 1)[1]
+            parts = path.strip('/').split('/')
+            return parts[0] if parts else 'org'
+        else:
+            parts = u.strip('/').split('/')
+            return parts[-2] if len(parts) >= 2 else 'org'
+    except Exception:
+        return 'org'
+
 def update_jenkinsfile_buildgroovy(work_dir: Path) -> dict:
     return update_jenkinsfiles(work_dir, ['Jenkinsfile.build.groovy'])
 
@@ -655,7 +658,8 @@ def main():
     temp_root = Path(args.temp_dir) if args.temp_dir else Path(tempfile.gettempdir())
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles) for r in repos]
+        use_cache = bool(args.git_file)
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 

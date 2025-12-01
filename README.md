@@ -25,50 +25,23 @@ pip install -r requirements.txt
 chmod +x gradle_artifactory_migrator.py
 ```
 
-## Usage
+## Usage (Horizon Standard Migrator)
 
 ### Single Repository
 ```bash
-python enhanced_gradle_migrator.py \
-  --git-urls git@github.com:your-org/your-repo.git \
-  --commit-message "Migrate to Artifactory"
-```
-
-### Multiple Repositories
-```bash
-python enhanced_gradle_migrator.py \
-  --git-urls git@github.com:your-org/repo1.git git@github.com:your-org/repo2.git \
-  --commit-message "Migrate to Artifactory" \
-  --max-workers 20
-```
-
-### Using Repository List File
-```bash
-# Create a file with repository URLs (one per line)
-echo "git@github.com:your-org/repo1.git" > repos.txt
-echo "git@github.com:your-org/repo2.git" >> repos.txt
-
-python enhanced_gradle_migrator.py \
-  --git-file repos.txt \
-  --commit-message "Migrate to Artifactory" \
-  --max-workers 30
-```
-
-### Horizon Standard Migration (settings + wrapper + dependency verification)
-
-This flow prepends the Artifactory repositories block to line 1 of `settings.gradle`, updates `gradle/wrapper/gradle-wrapper.properties` `distributionUrl` to point to Artifactory (derives the Gradle version from the existing Nexus URL), verifies dependency resolution with Gradle, then commits and pushes on success.
-
-#### Single Repository
-```bash
 python horizon_standard_migrator.py \
-  --git-urls git@github.com:your-org/your-repo.git \
+  --git-urls ssh://git@scm.org.com/spk/your-repo.git \
   --commit-message "Migrate settings + wrapper to Artifactory" \
   --branch-name horizon-migration \
   --artifactory-url https://artifactory.org.com/artifactory
 ```
 
-#### Multiple Repositories (from file)
+### Multiple Repositories (from file)
 ```bash
+# Create a file with repository URLs (one per line)
+echo "ssh://git@scm.org.com/spk/repo1.git" > repos.txt
+echo "ssh://git@scm.org.com/spk/repo2.git" >> repos.txt
+
 python horizon_standard_migrator.py \
   --git-file repos.txt \
   --commit-message "Migrate settings + wrapper to Artifactory" \
@@ -77,13 +50,12 @@ python horizon_standard_migrator.py \
   --artifactory-url https://artifactory.org.com/artifactory
 ```
 
-#### Behavior
-- Clones via SSH, creates/checkout branch `--branch-name` (default `horizon-migration`).
-- Detects Gradle Platform; if detected, stops with a message and does not modify files.
-- Prepends repositories block to `settings.gradle` (line 1).
-- Updates `gradle/wrapper/gradle-wrapper.properties` `distributionUrl` using the version parsed from the existing Nexus URL.
-- Runs Gradle `dependencies --refresh-dependencies --no-daemon` via wrapper if present; only commits on success.
-- Pushes to `origin/<branch-name>`.
+### Behavior (High Level)
+- Clones via SSH and creates/checkout branch.
+- Analyzes project and picks one path: Standard, Gradle Platform, or Version Catalog.
+- Updates settings/wrapper (or platform files), then updates Jenkinsfile(s).
+- Verifies dependencies; commits and pushes on success.
+- Uses per-repo cache (`-g <cache-dir>`) only when `--git-file` is provided.
 
 ### Dependency Log Aggregator
 
@@ -110,19 +82,18 @@ python aggregate_dependency_logs.py \
 - Linux/macOS: `/tmp`
 - Windows: `C:\\Users\\<username>\\AppData\\Local\\Temp`
 
-## Parameters
+## Arguments (horizon_standard_migrator.py)
 
-- `--git-urls`: Multiple repository URLs (space-separated)
-- `--git-file`: File containing repository URLs (one per line)
-- `--repo-urls`: Alternative flag for repository URLs
-- `--repo-file`: Alternative flag for repository list file
-- `--commit-message`: Commit message for the migration (default: "Migrate from Nexus to Artifactory")
-- `--artifactory-url`: Artifactory base URL (optional; defaults to `https://artifactory.org.com`)
-- `--artifactory-repo-key`: Artifactory repository key (optional)
-- `--max-workers`: Maximum number of parallel workers (default: 10)
-- `--temp-dir`: Temporary directory for cloning repositories
-- `--report-file`: Output file for migration report (default: migration_report.md)
-- `--branch-name`: Branch name used for migration changes (optional; default: `horizon-migration`)
+- `--git-urls`: Repository URLs (space-separated)
+- `--git-file`: File with repository URLs (one per line)
+- `--branch-name`: Branch name (default: `horizon-migration`)
+- `--commit-message`: Commit message (default: "Migrate settings.gradle and wrapper to Artifactory")
+- `--artifactory-url`: Artifactory base URL (default: `https://artifactory.org.com/artifactory`)
+- `--max-workers`: Parallel workers (default: 10)
+- `--temp-dir`: Temporary directory root
+- `--java-home-override`: JAVA_HOME override for Gradle invocation
+- `--jenkinsfiles`: Jenkinsfile paths to update (default: `Jenkinsfile.build.groovy`)
+- `--verbose`: Enable verbose logging
 
 ## What the Tool Does
 
@@ -142,19 +113,15 @@ Edit `templates/artifactory.gradle` to customize the publishing plugin.
 ### Custom Jenkinsfile Template
 Edit `templates/Jenkinsfile.enhanced` to customize the Jenkins pipeline.
 
-## Credential & URL Sourcing
+## Wrapper Credentials (Local)
 
-- The tool does not require passing Artifactory credentials or repo keys as CLI arguments.
-- Dependency resolution templates reference Gradle properties:
-  - `project.findProperty("artifactory_user")`
-  - `project.findProperty("artifactory_password")`
-  - Fallbacks: `System.getProperty("gradle.wrapperUser")` and `System.getProperty("gradle.wrapperPassword")`
-- Publishing credentials are managed within the Gradle plugin and Jenkinsfile template.
-- Optionally, you may override the Artifactory base URL via `--artifactory-url`.
+- For wrapper bootstrap authentication, set once:
+  - `JAVA_TOOL_OPTIONS=-Dgradle.wrapperUser=<username> -Dgradle.wrapperPassword=<password>`
+- This is read by the wrapper JVM regardless of `-g` usage.
 
 ## Logging
 
-The tool creates a detailed `migration.log` file with all operations and errors.
+- Detailed log written to the console; dependency verification logs are saved to the system temp directory as `dependency-resolution-<spk>-<repo>.log`.
 
 ## Error Handling
 
@@ -165,8 +132,5 @@ The tool creates a detailed `migration.log` file with all operations and errors.
 
 ## Scaling
 
-For migrating hundreds of repositories:
-- Increase `--max-workers` based on your system capabilities
-- Use `--repos-file` for batch processing
-- Monitor system resources during migration
-- Consider running in batches for very large migrations
+- Increase `--max-workers` based on your system capabilities.
+- Use `--git-file` for batch processing; `-g <cache-dir>` is applied per repo to avoid lock contention.
