@@ -1,4 +1,5 @@
 import re
+import logging
 
 # Template for settings.gradle repository configuration
 # This template adds Artifactory repositories for dependency resolution
@@ -60,18 +61,27 @@ repositories {
 def get_version_catalog_settings_template() -> str:
     return VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE
 
+def _normalize_base(artifactory_url: str) -> str:
+    base = artifactory_url.rstrip('/')
+    return base if base.endswith('/artifactory') else base + '/artifactory'
+
+def get_settings_template(artifactory_url: str = "https://artifactory.org.com") -> str:
+    base = _normalize_base(artifactory_url)
+    return SETTINGS_GRADLE_TEMPLATE.replace('https://artifactory.org.com/artifactory', base)
+
+log = logging.getLogger("horizon")
+
 def append_repositories_to_settings(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
     try:
-        # Get the appropriate template
-        template = SETTINGS_GRADLE_TEMPLATE
+        template = get_settings_template(artifactory_url)
         
         # Read existing content
         with open(settings_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # Check if Artifactory repositories already exist
-        if artifactory_url in content:
-            print(f"Artifactory repositories already exist in {settings_file}")
+        base = _normalize_base(artifactory_url)
+        if base in content:
+            log.info(f"Artifactory repositories already exist in {settings_file}")
             return False
             
         # Check if dependencyResolutionManagement block exists (Gradle 6+ feature)
@@ -89,7 +99,7 @@ def append_repositories_to_settings(settings_file: str, artifactory_url: str = "
                     # Fallback: append to end
                     new_content = content + '\n\n' + template.strip()
             else:
-                # Add repositories block inside dependencyResolutionManagement
+                
                 dep_mgmt_end = content.rfind('}')
                 if dep_mgmt_end != -1:
                     new_content = content[:dep_mgmt_end] + '\n    repositories {' + template.strip() + '\n    }\n' + content[dep_mgmt_end:]
@@ -102,36 +112,29 @@ def append_repositories_to_settings(settings_file: str, artifactory_url: str = "
         # Write updated content
         with open(settings_file, 'w', encoding='utf-8') as f:
             f.write(new_content)
-            
-        print(f"Successfully updated {settings_file} with Artifactory repositories")
+        log.info(f"Successfully updated {settings_file} with Artifactory repositories")
         return True
         
     except Exception as e:
-        print(f"Error updating {settings_file}: {e}")
+        log.error(f"Error updating {settings_file}: {e}")
         return False
 
 def append_repositories_to_settings_g6(settings_file: str, artifactory_url: str = "https://artifactory.org.com") -> bool:
     try:
-        template = STANDARD_SETTINGS_G6_TEMPLATE
+        base = _normalize_base(artifactory_url)
+        template = STANDARD_SETTINGS_G6_TEMPLATE.replace('https://artifactory.org.com/artifactory', base)
         with open(settings_file, 'r', encoding='utf-8') as f:
             content = f.read()
-        if artifactory_url in content:
-            print(f"Artifactory repositories already exist in {settings_file}")
+        if base in content:
+            log.info(f"Artifactory repositories already exist in {settings_file}")
             return False
         new_content = template.strip() + '\n\n' + content
         with open(settings_file, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        print(f"Successfully updated {settings_file} with Artifactory repositories (G6)")
+        log.info(f"Successfully updated {settings_file} with Artifactory repositories (G6)")
         return True
     except Exception as e:
-        print(f"Error updating {settings_file}: {e}")
+        log.error(f"Error updating {settings_file}: {e}")
         return False
 
-# Example usage
-if __name__ == "__main__":
-    # Test templates
-    print("Groovy DSL Template:")
-    print(get_settings_template(is_kotlin_dsl=False))
-    
-    print("\nKotlin DSL Template:")
-    print(get_settings_template(is_kotlin_dsl=True))
+# No CLI/testing code here; used by orchestrator only

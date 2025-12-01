@@ -8,6 +8,7 @@ import argparse
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Optional
+import logging
 
 from gradle_parser import GradleProjectParser
 from settings_template import append_repositories_to_settings, append_repositories_to_settings_g6, get_version_catalog_settings_template
@@ -17,6 +18,11 @@ import platform
 import re
 
 VERBOSE = False
+log = logging.getLogger("horizon")
+
+def configure_logger(verbose: bool):
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format='[%(levelname)s] %(message)s')
 
 def clone_repo(repo_url: str, work_dir: Path) -> Tuple[bool, str]:
     try:
@@ -72,9 +78,9 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
     if settings:
         clean_res = remove_plasma_nexus_block(settings)
         result['steps'].append({'allprojects_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0), 'removed_count': clean_res.get('removed_count', 0)})
-        print("Standard Step 2: gradle.allprojects block " + ("removed" if clean_res.get('removed') else "not found"))
+        log.info("Standard Step 2: gradle.allprojects block " + ("removed" if clean_res.get('removed') else "not found"))
         if VERBOSE and clean_res.get('removed'):
-            print(f"  removed_count: {clean_res.get('removed_count', 0)} removed_bytes: {clean_res.get('removed_bytes', 0)}")
+            log.debug(f"removed_count={clean_res.get('removed_count', 0)} removed_bytes={clean_res.get('removed_bytes', 0)}")
 
         version = parse_gradle_version_from_wrapper(work_dir)
         use_g6 = False
@@ -89,24 +95,25 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
         else:
             ok = append_repositories_to_settings(settings, artifactory_url)
         result['steps'].append({'settings_updated': ok, 'file': settings})
-        print("Standard Step 2: settings.gradle " + ("updated" if ok else "update skipped or already present"))
+        log.info("Standard Step 2: settings.gradle " + ("updated" if ok else "update skipped or already present"))
         if VERBOSE and ok:
-            print(f"  file: {settings}")
+            log.debug(f"settings file: {settings}")
     else:
         result['steps'].append({'settings_updated': False, 'error': 'settings.gradle not found'})
-        print("Standard Step 2: settings.gradle not found")
+        log.info("Standard Step 2: settings.gradle not found")
 
     # 2. Update gradle-wrapper.properties distributionUrl
     wrapper = structure.get('gradle_wrapper_properties')
     if wrapper:
         wr = update_gradle_wrapper(wrapper, artifactory_base=artifactory_url)
         result['steps'].append({'wrapper_updated': wr['success'], 'old_url': wr['old_url'], 'new_url': wr['new_url'], 'file': wrapper})
-        print("Standard Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', []))))
+        msg = "Standard Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', [])))
+        (log.info if wr.get('success') else log.error)(msg)
         if VERBOSE and wr.get('success'):
-            print(f"  old: {wr.get('old_url')}\n  new: {wr.get('new_url')}")
+            log.debug(f"old: {wr.get('old_url')} new: {wr.get('new_url')}")
     else:
         result['steps'].append({'wrapper_updated': False, 'error': 'gradle-wrapper.properties not found'})
-        print("Standard Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
+        log.info("Standard Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
 
     result['success'] = all(s.get('settings_updated', True) if 'settings_updated' in s else True for s in result['steps']) and \
                         all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
@@ -118,12 +125,12 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     ok, msg = clone_repo(repo_url, work_dir)
     if not ok:
         out['details'] = {'error': f'clone failed: {msg}'}
-        print(f"Clone failed for {repo_url}: {msg}")
+        log.error(f"Clone failed for {repo_url}: {msg}")
         return out
     b_ok, b_msg = ensure_branch(work_dir, branch_name)
     if not b_ok:
         out['details'] = {'error': f'branch failed: {b_msg}'}
-        print("Branch setup failed")
+        log.error("Branch setup failed")
         return out
     # Detect platform
     gp = GradleProjectParser(str(work_dir))
@@ -131,7 +138,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     is_platform = gp.detect_gradle_platform()
     libs_toml_exists = (work_dir / 'gradle' / 'libs.versions.toml').exists()
     if is_platform:
-        print("Flow: gradle_platform")
+        log.info("Flow: gradle_platform")
         pm = GradlePlatformMigrator(str(work_dir), verbose=VERBOSE)
         plat = pm.run_gradle_platform_migration()
         out['details'] = plat
@@ -141,23 +148,23 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if not v_ok:
                 out['success'] = False
                 out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                print("Gradle Platform Step 3: dependency verification failed")
+                log.error("Gradle Platform Step 3: dependency verification failed")
                 return out
             if VERBOSE:
-                print(v_msg)
-            print("Gradle Platform Step 3: dependency verification passed")
+                log.debug(v_msg)
+            log.info("Gradle Platform Step 3: dependency verification passed")
             j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
             if j_res.get('updated_count', 0) > 0:
-                print("Gradle Platform Step 4: Jenkinsfile(s) updated")
+                log.info("Gradle Platform Step 4: Jenkinsfile(s) updated")
             else:
-                print("Gradle Platform Step 4: Jenkinsfile update skipped")
+                log.info("Gradle Platform Step 4: Jenkinsfile update skipped")
             c_ok, c_msg = commit_push(work_dir, commit_message)
             out['success'] = c_ok
             out['details']['commit'] = c_msg
         return out
     elif libs_toml_exists:
         # Version catalog present but not plasma; run catalog-only adjustments
-        print("Flow: version_catalog_non_plasma")
+        log.info("Flow: version_catalog_non_plasma")
         cat = catalog_non_plasma_migration(work_dir)
         out['details'] = cat
         if cat.get('success'):
@@ -166,22 +173,22 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if not v_ok:
                 out['success'] = False
                 out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                print("Version Catalog Step 3: dependency verification failed")
+                log.error("Version Catalog Step 3: dependency verification failed")
                 return out
             if VERBOSE:
-                print(v_msg)
-            print("Version Catalog Step 3: dependency verification passed")
+                log.debug(v_msg)
+            log.info("Version Catalog Step 3: dependency verification passed")
             j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
             if j_res.get('updated_count', 0) > 0:
-                print("Version Catalog Step 4: Jenkinsfile(s) updated")
+                log.info("Version Catalog Step 4: Jenkinsfile(s) updated")
             else:
-                print("Version Catalog Step 4: Jenkinsfile update skipped")
+                log.info("Version Catalog Step 4: Jenkinsfile update skipped")
             c_ok, c_msg = commit_push(work_dir, commit_message)
             out['success'] = c_ok
             out['details']['commit'] = c_msg
         return out
     # Standard migration steps
-    print("Flow: standard")
+    log.info("Flow: standard")
     mig = standard_migration(work_dir, artifactory_url)
     out['details'] = mig
     if mig['success']:
@@ -191,16 +198,16 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         if not v_ok:
             out['success'] = False
             out['details']['error'] = 'Dependency resolution failed; not committing changes'
-            print("Standard Step 3: dependency verification failed")
+            log.error("Standard Step 3: dependency verification failed")
             return out
         if VERBOSE:
-            print(v_msg)
-        print("Standard Step 3: dependency verification passed")
+            log.debug(v_msg)
+        log.info("Standard Step 3: dependency verification passed")
         j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
         if j_res.get('updated_count', 0) > 0:
-            print("Standard Step 4: Jenkinsfile(s) updated")
+            log.info("Standard Step 4: Jenkinsfile(s) updated")
         else:
-            print("Standard Step 4: Jenkinsfile update skipped")
+            log.info("Standard Step 4: Jenkinsfile update skipped")
         c_ok, c_msg = commit_push(work_dir, commit_message)
         out['success'] = c_ok
         out['details']['commit'] = c_msg
@@ -215,10 +222,11 @@ def catalog_non_plasma_migration(work_dir: Path) -> dict:
         if wrapper_path.exists():
             wr = update_gradle_wrapper(str(wrapper_path))
             result['steps'].append({'wrapper_updated': wr.get('success', False), 'old_url': wr.get('old_url'), 'new_url': wr.get('new_url'), 'file': str(wrapper_path)})
-            print("Version Catalog Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', []))))
+            msg = "Version Catalog Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', [])))
+            (log.info if wr.get('success') else log.error)(msg)
         else:
             result['steps'].append({'wrapper_updated': False, 'error': 'gradle-wrapper.properties not found'})
-            print("Version Catalog Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
+            log.info("Version Catalog Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
         
         # Replace buildSrc/settings.gradle with version catalog template if provided
         tpl = get_version_catalog_settings_template()
@@ -227,16 +235,16 @@ def catalog_non_plasma_migration(work_dir: Path) -> dict:
             buildsrc_settings.parent.mkdir(parents=True, exist_ok=True)
             buildsrc_settings.write_text(tpl, encoding='utf-8')
             result['steps'].append({'buildsrc_settings_replaced': True, 'file': str(buildsrc_settings)})
-            print("Version Catalog Step 2: buildSrc/settings.gradle replaced")
+            log.info("Version Catalog Step 2: buildSrc/settings.gradle replaced")
         else:
             result['steps'].append({'buildsrc_settings_replaced': False, 'message': 'VERSION_CATALOG_SETTINGS_GRADLE_TEMPLATE empty; skipped'})
-            print("Version Catalog Step 2: buildSrc/settings.gradle replacement skipped (template empty)")
+            log.info("Version Catalog Step 2: buildSrc/settings.gradle replacement skipped (template empty)")
         
         # Clean root settings.gradle to be minimal
         pm = GradlePlatformMigrator(str(work_dir))
         clean = pm.clean_root_settings_gradle()
         result['steps'].append({'root_settings_cleaned': clean.get('valid', False), 'file': str(work_dir / 'settings.gradle')})
-        print("Version Catalog Step 2: root settings cleanup " + ("applied" if clean.get('valid') else "skipped"))
+        log.info("Version Catalog Step 2: root settings cleanup " + ("applied" if clean.get('valid') else "skipped"))
         
         result['success'] = all(
             s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps']
@@ -591,6 +599,7 @@ def main():
     args = ap.parse_args()
     global VERBOSE
     VERBOSE = bool(args.verbose)
+    configure_logger(VERBOSE)
     repos: List[str] = []
     if args.git_urls:
         repos.extend(args.git_urls)
@@ -599,7 +608,7 @@ def main():
         if p.exists():
             repos.extend([l.strip() for l in p.read_text().splitlines() if l.strip()])
     if not repos:
-        print('No repositories provided')
+        log.error('No repositories provided')
         sys.exit(1)
 
     temp_root = Path(args.temp_dir) if args.temp_dir else Path(tempfile.gettempdir())
@@ -610,9 +619,9 @@ def main():
             results.append(f.result())
 
     ok_count = sum(1 for r in results if r['success'])
-    print(f"Completed. Success: {ok_count}/{len(results)}")
+    log.info(f"Completed. Success: {ok_count}/{len(results)}")
     for r in results:
-        print(f"- {r['repo']}: {'OK' if r['success'] else 'FAILED'}")
+        log.info(f"- {r['repo']}: {'OK' if r['success'] else 'FAILED'}")
 
 if __name__ == '__main__':
     main()
