@@ -94,6 +94,7 @@ python aggregate_dependency_logs.py \
 - `--java-home-override`: JAVA_HOME override for Gradle invocation
 - `--jenkinsfiles`: Jenkinsfile paths to update (default: `Jenkinsfile.build.groovy`)
 - `--verbose`: Enable verbose logging
+- `--regen-wrapper`: Regenerate `gradle/wrapper/gradle-wrapper.jar` before migration (optional)
 
 ## What the Tool Does
 

@@ -124,7 +124,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
                         all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
     return result
 
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True) -> dict:
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     # Rerun support: reuse existing work dir if it already contains a git repo
@@ -142,6 +142,13 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         out['details'] = {'error': f'branch failed: {b_msg}'}
         log.error("Branch setup failed")
         return out
+    if regen_wrapper:
+        rw = regenerate_wrapper_files(work_dir, java_home_override)
+        out.setdefault('details', {})['wrapper_regenerated'] = rw.get('success', False)
+        if rw.get('success'):
+            log.info("Wrapper regeneration completed")
+        else:
+            log.error("Wrapper regeneration failed")
     # Detect platform
     gp = GradleProjectParser(str(work_dir))
     gp.find_all_gradle_files()
@@ -160,12 +167,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
                 log.info("Gradle Platform: Jenkinsfile update skipped")
             v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
-            cleanup_after_verification(work_dir)
             if not v_ok:
-                out['success'] = False
-                out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                log.error("Gradle Platform Step 3: dependency verification failed")
-                return out
+                log.info("Retrying dependency verification with wrapper regeneration")
+                rw = regenerate_wrapper_files(work_dir, java_home_override)
+                v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+                out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
+                cleanup_after_verification(work_dir)
+                if not v2_ok:
+                    out['success'] = False
+                    out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                    log.error("Gradle Platform Step 3: dependency verification failed")
+                    return out
+            else:
+                cleanup_after_verification(work_dir)
             if VERBOSE:
                 log.debug(v_msg)
             log.info("Gradle Platform Step 3: dependency verification passed")
@@ -186,12 +200,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
                 log.info("Version Catalog: Jenkinsfile update skipped")
             v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
-            cleanup_after_verification(work_dir)
             if not v_ok:
-                out['success'] = False
-                out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                log.error("Version Catalog Step 3: dependency verification failed")
-                return out
+                log.info("Retrying dependency verification with wrapper regeneration")
+                rw = regenerate_wrapper_files(work_dir, java_home_override)
+                v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+                out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
+                cleanup_after_verification(work_dir)
+                if not v2_ok:
+                    out['success'] = False
+                    out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                    log.error("Version Catalog Step 3: dependency verification failed")
+                    return out
+            else:
+                cleanup_after_verification(work_dir)
             if VERBOSE:
                 log.debug(v_msg)
             log.info("Version Catalog Step 3: dependency verification passed")
@@ -213,12 +234,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         # Verify dependency resolution before committing
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
-        cleanup_after_verification(work_dir)
         if not v_ok:
-            out['success'] = False
-            out['details']['error'] = 'Dependency resolution failed; not committing changes'
-            log.error("Standard Step 3: dependency verification failed")
-            return out
+            log.info("Retrying dependency verification with wrapper regeneration")
+            rw = regenerate_wrapper_files(work_dir, java_home_override)
+            v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+            out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
+            cleanup_after_verification(work_dir)
+            if not v2_ok:
+                out['success'] = False
+                out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                log.error("Standard Step 3: dependency verification failed")
+                return out
+        else:
+            cleanup_after_verification(work_dir)
         if VERBOSE:
             log.debug(v_msg)
         log.info("Standard Step 3: dependency verification passed")
@@ -366,6 +394,8 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         env['HOME'] = str(user_home)
         if platform.system().lower().startswith('win'):
             env['USERPROFILE'] = str(user_home)
+        if use_cache and cache_dir:
+            env['GRADLE_USER_HOME'] = str(cache_dir)
         if java_home:
             env['JAVA_HOME'] = java_home
             env['PATH'] = str(Path(java_home) / 'bin') + os.pathsep + env.get('PATH', '')
@@ -394,7 +424,8 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
         footer = "**************END*******************\n"
         raw_cmd = ' '.join(cmd)
-        cmd_line = f"Command: {raw_cmd}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\n"
+        gradle_user_home_display = (str(cache_dir) if (use_cache and cache_dir) else env.get('GRADLE_USER_HOME', str(Path.home() / '.gradle')))
+        cmd_line = f"Command: {raw_cmd}\nJAVA_HOME: {java_home or env.get('JAVA_HOME','')}\nGRADLE_USER_HOME: {gradle_user_home_display}\n"
         summary = ''
         if unresolved:
             summary = "=== Summary of unresolved dependencies ===\n" + "\n".join(f"- {u}" for u in unresolved) + "\n\n"
@@ -421,7 +452,8 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
             header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
             msg = 'Gradle/Gradle wrapper not found in repository'
-            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + msg + "\n" + footer, encoding='utf-8')
+            gradle_user_home_display = env.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))
+            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\nGRADLE_USER_HOME: {gradle_user_home_display}\n" + msg + "\n" + footer, encoding='utf-8')
             return False, msg + f". Log: {log_file}"
         except Exception:
             return False, 'Gradle/Gradle wrapper not found in repository'
@@ -434,10 +466,49 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
             log_file = tmp_dir / f"dependency-resolution-{spk}-{repo_name}.log"
             header = f"******************** {spk}/{repo_name} DEPENDENCY RESOLUTION ***********************\n"
             footer = "**************END*******************\n"
-            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\n" + str(e) + "\n" + footer, encoding='utf-8')
+            gradle_user_home_display = env.get('GRADLE_USER_HOME', str(Path.home() / '.gradle'))
+            log_file.write_text(header + f"JAVA_HOME: {java_home or ''}\nGRADLE_USER_HOME: {gradle_user_home_display}\n" + str(e) + "\n" + footer, encoding='utf-8')
             return False, str(e) + f". Log: {log_file}"
         except Exception:
             return False, str(e)
+
+def regenerate_wrapper_files(work_dir: Path, java_home_override: Optional[str] = None) -> dict:
+    try:
+        props = work_dir / 'gradle' / 'wrapper' / 'gradle-wrapper.properties'
+        if not props.exists():
+            return {'success': False, 'error': 'gradle-wrapper.properties not found'}
+        t = props.read_text(encoding='utf-8', errors='ignore')
+        m = re.search(r'(?m)^\s*distributionUrl\s*=\s*(.+)\s*$', t)
+        if not m:
+            return {'success': False, 'error': 'distributionUrl not found'}
+        dist_url = m.group(1).strip().replace('\\:', ':')
+        is_windows = platform.system().lower().startswith('win')
+        gradlew_bat = work_dir / 'gradlew.bat'
+        gradlew_sh = work_dir / 'gradlew'
+        cmd = []
+        if gradlew_sh.exists() and not is_windows:
+            cmd = [str(gradlew_sh), 'wrapper', '--gradle-distribution-url', dist_url, '--no-daemon']
+        elif is_windows and gradlew_bat.exists():
+            cmd = [str(gradlew_bat), 'wrapper', '--gradle-distribution-url', dist_url, '--no-daemon']
+        else:
+            cmd = ['gradle', 'wrapper', '--gradle-distribution-url', dist_url, '--no-daemon']
+        env = os.environ.copy()
+        version = parse_gradle_version_from_wrapper(work_dir)
+        java_home = java_home_override if java_home_override else select_java_home_for_gradle_version(version)
+        if java_home:
+            env['JAVA_HOME'] = java_home
+            env['PATH'] = str(Path(java_home) / 'bin') + os.pathsep + env.get('PATH', '')
+        user_home = Path.home()
+        env['HOME'] = str(user_home)
+        if platform.system().lower().startswith('win'):
+            env['USERPROFILE'] = str(user_home)
+        p = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, env=env)
+        if p.returncode == 0:
+            return {'success': True}
+        err = p.stderr.strip() or p.stdout.strip()
+        return {'success': False, 'error': err}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
 
 def build_init_script() -> str:
     return (
@@ -719,6 +790,7 @@ def main():
     ap.add_argument('--java-home-override', help='Optional JAVA_HOME override path to use for Gradle invocation')
     ap.add_argument('--jenkinsfiles', nargs='+', default=['Jenkinsfile.build.groovy'], help='Relative Jenkinsfile paths to update with env.GRADLE_PARAMS')
     ap.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    ap.add_argument('--regen-wrapper', action='store_true', help='Regenerate gradle/wrapper/gradle-wrapper.jar before migration')
 
     args = ap.parse_args()
     global VERBOSE
@@ -739,7 +811,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
         use_cache = bool(args.git_file)
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache) for r in repos]
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache, bool(args.regen_wrapper)) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 
