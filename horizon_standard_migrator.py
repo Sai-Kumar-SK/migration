@@ -39,6 +39,11 @@ def clone_repo(repo_url: str, work_dir: Path) -> Tuple[bool, str]:
 
 def ensure_branch(work_dir: Path, branch_name: str) -> Tuple[bool, str]:
     try:
+        # Skip checkout if already on the target branch
+        cur = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=work_dir, capture_output=True, text=True)
+        current = cur.stdout.strip() if cur.returncode == 0 else ''
+        if current == branch_name:
+            return True, branch_name
         create = subprocess.run(['git', 'checkout', '-b', branch_name], cwd=work_dir, capture_output=True, text=True)
         if create.returncode != 0:
             checkout = subprocess.run(['git', 'checkout', branch_name], cwd=work_dir, capture_output=True, text=True)
@@ -122,11 +127,16 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
 def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
-    ok, msg = clone_repo(repo_url, work_dir)
-    if not ok:
-        out['details'] = {'error': f'clone failed: {msg}'}
-        log.error(f"Clone failed for {repo_url}: {msg}")
-        return out
+    # Rerun support: reuse existing work dir if it already contains a git repo
+    if not (work_dir.exists() and (work_dir / '.git').exists()):
+        ok, msg = clone_repo(repo_url, work_dir)
+        if not ok:
+            out['details'] = {'error': f'clone failed: {msg}'}
+            log.error(f"Clone failed for {repo_url}: {msg}")
+            return out
+        log.info("Clone completed")
+    else:
+        log.info("Rerun detected: using existing work directory (skip clone)")
     b_ok, b_msg = ensure_branch(work_dir, branch_name)
     if not b_ok:
         out['details'] = {'error': f'branch failed: {b_msg}'}
@@ -275,14 +285,53 @@ def verify_dependency_resolution(work_dir: Path, repo_url: str, java_home_overri
         init_path.write_text(init_script, encoding='utf-8')
         cache_dir = None
         if use_cache:
-            cache_dir = work_dir / 'gradle-cache'
+            cache_dir = work_dir / '.gradle-user-home'
             cache_dir.mkdir(parents=True, exist_ok=True)
             git_exclude = work_dir / '.git' / 'info' / 'exclude'
             try:
                 if git_exclude.exists():
                     ex_text = git_exclude.read_text(encoding='utf-8', errors='ignore')
-                    if 'gradle-cache/' not in ex_text:
-                        git_exclude.write_text(ex_text + '\ngradle-cache/\n', encoding='utf-8')
+                    if '.gradle-user-home/' not in ex_text:
+                        git_exclude.write_text(ex_text + '\n.gradle-user-home/\n', encoding='utf-8')
+            except Exception:
+                pass
+            # Ensure wrapper credentials available in per-repo user home
+            try:
+                src_p = Path.home() / '.gradle' / 'gradle.properties'
+                user_val = ''
+                pass_val = ''
+                if src_p.exists():
+                    t = src_p.read_text(encoding='utf-8', errors='ignore')
+                    m1 = re.search(r'(?m)^\s*systemProp\.gradle\.wrapperUser\s*=\s*(.+)\s*$', t)
+                    m2 = re.search(r'(?m)^\s*systemProp\.gradle\.wrapperPassword\s*=\s*(.+)\s*$', t)
+                    if m1:
+                        user_val = m1.group(1).strip()
+                    if m2:
+                        pass_val = m2.group(1).strip()
+                    if not user_val:
+                        m1b = re.search(r'(?m)^\s*gradle\.wrapperUser\s*=\s*(.+)\s*$', t)
+                        if m1b:
+                            user_val = m1b.group(1).strip()
+                    if not pass_val:
+                        m2b = re.search(r'(?m)^\s*gradle\.wrapperPassword\s*=\s*(.+)\s*$', t)
+                        if m2b:
+                            pass_val = m2b.group(1).strip()
+                    if not user_val:
+                        m1c = re.search(r'(?m)^\s*artifactory_user\s*=\s*(.+)\s*$', t)
+                        if m1c:
+                            user_val = m1c.group(1).strip()
+                    if not pass_val:
+                        m2c = re.search(r'(?m)^\s*artifactory_password\s*=\s*(.+)\s*$', t)
+                        if m2c:
+                            pass_val = m2c.group(1).strip()
+                dest_props = cache_dir / 'gradle.properties'
+                lines = []
+                if user_val:
+                    lines.append(f"systemProp.gradle.wrapperUser={user_val}")
+                if pass_val:
+                    lines.append(f"systemProp.gradle.wrapperPassword={pass_val}")
+                if lines:
+                    dest_props.write_text('\n'.join(lines) + '\n', encoding='utf-8')
             except Exception:
                 pass
         
@@ -447,10 +496,10 @@ def cleanup_after_verification(work_dir: Path) -> None:
                 init_path.unlink()
             except Exception:
                 pass
-        cache_dir = work_dir / 'gradle-cache'
-        if cache_dir.exists():
+        user_home_dir = work_dir / '.gradle-user-home'
+        if user_home_dir.exists():
             try:
-                shutil.rmtree(cache_dir, ignore_errors=True)
+                shutil.rmtree(user_home_dir, ignore_errors=True)
             except Exception:
                 pass
     except Exception:
