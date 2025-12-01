@@ -624,6 +624,37 @@ def extract_spk(repo_url: str) -> str:
 def update_jenkinsfile_buildgroovy(work_dir: Path) -> dict:
     return update_jenkinsfiles(work_dir, ['Jenkinsfile.build.groovy'])
 
+def update_jenkinsfiles(work_dir: Path, files: List[str]) -> dict:
+    res = {'updated_count': 0, 'updated_files': [], 'skipped_files': []}
+    try:
+        for rel in files:
+            p = work_dir / rel
+            if not p.exists():
+                res['skipped_files'].append(str(p))
+                continue
+            text = p.read_text(encoding='utf-8', errors='ignore')
+            if 'env.GRADLE_PARAMS' in text:
+                res['skipped_files'].append(str(p))
+                continue
+            lines = text.splitlines()
+            idx = None
+            for i, line in enumerate(lines):
+                if '@Library' in line:
+                    idx = i
+                    break
+            insert_line = "env.GRADLE_PARAMS = \"-Dgradle.wrapperUser=${ORG_GRADLE_PROJECT_artifactory_user} -Dgradle.wrapperPassword=${ORG_GRADLE_PROJECT_artifactory_password}\""
+            if idx is not None:
+                lines.insert(idx + 1, insert_line)
+            else:
+                lines.insert(0, insert_line)
+            p.write_text('\n'.join(lines), encoding='utf-8')
+            res['updated_count'] += 1
+            res['updated_files'].append(str(p))
+        return res
+    except Exception as e:
+        res['error'] = str(e)
+        return res
+        
 def remove_plasma_nexus_block(settings_file: str) -> dict:
     """Remove any gradle.allprojects { ... } block from settings.gradle, irrespective of contents.
 
@@ -719,33 +750,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-def update_jenkinsfiles(work_dir: Path, files: List[str]) -> dict:
-    res = {'updated_count': 0, 'updated_files': [], 'skipped_files': []}
-    try:
-        for rel in files:
-            p = work_dir / rel
-            if not p.exists():
-                res['skipped_files'].append(str(p))
-                continue
-            text = p.read_text(encoding='utf-8', errors='ignore')
-            if 'env.GRADLE_PARAMS' in text:
-                res['skipped_files'].append(str(p))
-                continue
-            lines = text.splitlines()
-            idx = None
-            for i, line in enumerate(lines):
-                if '@Library' in line:
-                    idx = i
-                    break
-            insert_line = "env.GRADLE_PARAMS = \"-Dgradle.wrapperUser=${ORG_GRADLE_PROJECT_artifactory_user} -Dgradle.wrapperPassword=${ORG_GRADLE_PROJECT_artifactory_password}\""
-            if idx is not None:
-                lines.insert(idx + 1, insert_line)
-            else:
-                lines.insert(0, insert_line)
-            p.write_text('\n'.join(lines), encoding='utf-8')
-            res['updated_count'] += 1
-            res['updated_files'].append(str(p))
-        return res
-    except Exception as e:
-        res['error'] = str(e)
-        return res
