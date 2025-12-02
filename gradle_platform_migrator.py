@@ -304,22 +304,36 @@ class GradlePlatformMigrator:
         return results
 
     def update_lib_groovy_plugin_ids(self) -> Dict:
-        result = {'success': True, 'files_updated': [], 'skipped': []}
+        result = {'success': True, 'files_updated': [], 'skipped': [], 'errors': []}
         try:
-            groovy_dir = self.project_root / 'buildSrc' / 'src' / 'main' / 'groovy'
-            if not groovy_dir.exists():
+            buildsrc_dir = self.project_root / 'buildSrc'
+            if not buildsrc_dir.exists():
                 return result
-            for f in groovy_dir.glob('*.lib.groovy'):
-                content = f.read_text(encoding='utf-8')
-                if "id 'ops.plasma.repositories-nexus'" in content:
-                    new_content = content.replace("id 'ops.plasma.repositories-nexus'", "id 'ops.plasma.repositories-artifactory'")
-                    f.write_text(new_content, encoding='utf-8')
-                    result['files_updated'].append(str(f))
-                else:
-                    result['skipped'].append(str(f))
+            # Consider all files ending with .lib.gradle anywhere under buildSrc
+            lib_gradle_files = list(buildsrc_dir.glob('**/*.lib.gradle'))
+            # Also include historical .lib.groovy files if present
+            lib_groovy_files = list((self.project_root / 'buildSrc' / 'src' / 'main' / 'groovy').glob('**/*.lib.groovy')) if (self.project_root / 'buildSrc' / 'src' / 'main' / 'groovy').exists() else []
+            targets = lib_gradle_files + lib_groovy_files
+            if not targets:
+                return result
+            for f in targets:
+                try:
+                    content = f.read_text(encoding='utf-8')
+                    new_content = content
+                    # Replace Groovy DSL: id 'ops.plasma.repositories-nexus'
+                    new_content = re.sub(r"id\s*'ops\.plasma\.repositories-nexus'", "id 'ops.plasma.repositories-artifactory'", new_content)
+                    # Replace Groovy/Kotlin DSL: id("ops.plasma.repositories-nexus") or id('...')
+                    new_content = re.sub(r"id\s*\(\s*[\"']ops\.plasma\.repositories-nexus[\"']\s*\)", "id(\"ops.plasma.repositories-artifactory\")", new_content)
+                    if new_content != content:
+                        f.write_text(new_content, encoding='utf-8')
+                        result['files_updated'].append(str(f))
+                    else:
+                        result['skipped'].append(str(f))
+                except Exception as fe:
+                    result['errors'].append(f"{str(f)}: {fe}")
             return result
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'files_updated': result.get('files_updated', []), 'skipped': result.get('skipped', []), 'error': str(e)}
 
     def replace_buildsrc_settings_with_template(self) -> Dict:
         result = {'success': False, 'replaced': False, 'errors': []}

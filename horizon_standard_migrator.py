@@ -159,33 +159,32 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         pm = GradlePlatformMigrator(str(work_dir), verbose=VERBOSE)
         plat = pm.run_gradle_platform_migration()
         out['details'] = plat
-        if plat.get('success'):
-            j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
-            if j_res.get('updated_count', 0) > 0:
-                log.info("Gradle Platform: Jenkinsfile(s) updated")
-            else:
-                log.info("Gradle Platform: Jenkinsfile update skipped")
-            v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
-            out['details']['verification'] = {'success': v_ok, 'message': v_msg}
-            if not v_ok:
-                log.info("Retrying dependency verification with wrapper regeneration")
-                rw = regenerate_wrapper_files(work_dir, java_home_override)
-                v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
-                out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
-                cleanup_after_verification(work_dir)
-                if not v2_ok:
-                    out['success'] = False
-                    out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                    log.error("Gradle Platform Step 3: dependency verification failed")
-                    return out
-            else:
-                cleanup_after_verification(work_dir)
-            if VERBOSE:
-                log.debug(v_msg)
-            log.info("Gradle Platform Step 3: dependency verification passed")
-            c_ok, c_msg = commit_push(work_dir, commit_message)
-            out['success'] = c_ok
-            out['details']['commit'] = c_msg
+        j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        if j_res.get('updated_count', 0) > 0:
+            log.info("Gradle Platform: Jenkinsfile(s) updated")
+        else:
+            log.info("Gradle Platform: Jenkinsfile update skipped")
+        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+        out['details']['verification'] = {'success': v_ok, 'message': v_msg}
+        if not v_ok:
+            log.info("Retrying dependency verification with wrapper regeneration")
+            rw = regenerate_wrapper_files(work_dir, java_home_override)
+            v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+            out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
+            cleanup_after_verification(work_dir)
+            if not v2_ok:
+                out['success'] = False
+                out['details']['error'] = 'Dependency resolution failed; not committing changes'
+                log.error("Gradle Platform Step 3: dependency verification failed")
+                return out
+        else:
+            cleanup_after_verification(work_dir)
+        if VERBOSE:
+            log.debug(v_msg)
+        log.info("Gradle Platform Step 3: dependency verification passed")
+        c_ok, c_msg = commit_push(work_dir, commit_message)
+        out['success'] = c_ok
+        out['details']['commit'] = c_msg
         return out
     elif libs_toml_exists:
         # Version catalog present but not plasma; run catalog-only adjustments
@@ -713,9 +712,10 @@ def update_jenkinsfiles(work_dir: Path, files: List[str]) -> dict:
                 if '@Library' in line:
                     idx = i
                     break
-            insert_line = "env.GRADLE_PARAMS = \"-Dgradle.wrapperUser=${ORG_GRADLE_PROJECT_artifactory_user} -Dgradle.wrapperPassword=${ORG_GRADLE_PROJECT_artifactory_password}\""
+            insert_line = "env.GRADLE_PARAMS = \" -Dgradle.wrapperUser=\\${ORG_GRADLE_PROJECT_artifactory_user} -Dgradle.wrapperPassword=\\${ORG_GRADLE_PROJECT_artifactory_password}\""
             if idx is not None:
-                lines.insert(idx + 1, insert_line)
+                lines.insert(idx + 1, "")
+                lines.insert(idx + 2, insert_line)
             else:
                 lines.insert(0, insert_line)
             p.write_text('\n'.join(lines), encoding='utf-8')
