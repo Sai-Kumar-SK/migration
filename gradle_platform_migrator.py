@@ -257,32 +257,32 @@ class GradlePlatformMigrator:
         
         # Step 2: Update libs.versions.toml
         if self.verbose:
-            self.log.info("1. Updating libs.versions.toml...")
+            self.log.info("2. Updating libs.versions.toml...")
         results['libs_versions_updated'] = self.update_libs_versions_toml()
         
         # Step 3: Update buildSrc/build.gradle
         if self.verbose:
-            self.log.info("2. Updating buildSrc/build.gradle...")
+            self.log.info("3. Updating buildSrc/build.gradle...")
         results['buildsrc_build_updated'] = self.update_buildsrc_build_gradle()
         
         # Step 4: Update buildSrc lib groovy plugin ids
         if self.verbose:
-            self.log.info("3. Updating buildSrc lib groovy plugin ids...")
+            self.log.info("4. Updating buildSrc lib groovy plugin ids...")
         results['buildsrc_libs_updated'] = self.update_lib_groovy_plugin_ids()
         
         # Step 5: Replace buildSrc/settings.gradle with provided template
         if self.verbose:
-            self.log.info("4. Replacing buildSrc/settings.gradle with template...")
+            self.log.info("5. Replacing buildSrc/settings.gradle with template...")
         results['buildsrc_settings_replaced'] = self.replace_buildsrc_settings_with_template()
         
         # Step 6: Check buildSrc/settings.gradle presence
         if self.verbose:
-            self.log.info("5. Checking buildSrc/settings.gradle...")
+            self.log.info("6. Checking buildSrc/settings.gradle...")
         results['buildsrc_settings_checked'] = self.check_buildsrc_settings_gradle()
         
         # Step 7: Validate and clean root settings.gradle
         if self.verbose:
-            self.log.info("6. Validating root settings.gradle...")
+            self.log.info("7. Validating root settings.gradle...")
         results['root_settings_validated'] = self.clean_root_settings_gradle()
         
         # Check overall success

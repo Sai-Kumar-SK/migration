@@ -16,6 +16,7 @@ from wrapper_updater import update_gradle_wrapper
 from gradle_platform_migrator import GradlePlatformMigrator
 import platform
 import re
+from nexus_remover import NexusRemover
 
 VERBOSE = False
 log = logging.getLogger("horizon")
@@ -120,8 +121,20 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
         result['steps'].append({'wrapper_updated': False, 'error': 'gradle-wrapper.properties not found'})
         log.info("Standard Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
 
+    # 3. Remove wrapper block from root build.gradle
+    root_build = structure.get('root_build_gradle')
+    if root_build:
+        nr = NexusRemover()
+        ok_remove, removed_items = nr.remove_nexus_from_build_gradle(root_build)
+        result['steps'].append({'root_build_wrapper_removed': ok_remove, 'file': root_build, 'removed_items_count': len(removed_items)})
+        log.info("Standard Step 3: root build.gradle wrapper " + ("removed" if ok_remove else "not found"))
+    else:
+        result['steps'].append({'root_build_wrapper_removed': False, 'error': 'root build.gradle not found'})
+        log.info("Standard Step 3: root build.gradle not found")
+
     result['success'] = all(s.get('settings_updated', True) if 'settings_updated' in s else True for s in result['steps']) and \
-                        all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps'])
+                        all(s.get('wrapper_updated', True) if 'wrapper_updated' in s else True for s in result['steps']) and \
+                        all(s.get('root_build_wrapper_removed', True) if 'root_build_wrapper_removed' in s else True for s in result['steps'])
     return result
 
 def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False) -> dict:

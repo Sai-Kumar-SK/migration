@@ -34,15 +34,16 @@ def update_gradle_wrapper(wrapper_file: str, artifactory_base: str = 'https://ar
         old_url = m.group(1).strip()
         result['old_url'] = old_url
 
-        # Extract version like gradle-6.8.2-all.zip
-        vm = re.search(r'gradle-([\d\.]+)-all\.zip', old_url)
+        # Extract version and distribution type like gradle-6.8.2-all.zip or gradle-8.12.1-bin.zip
+        vm = re.search(r'gradle-([\d\.]+)-(bin|all)\.zip', old_url)
         if not vm:
             result['errors'].append('Unable to extract Gradle version from distributionUrl')
             return result
         version = vm.group(1)
+        dist_type = vm.group(2)
 
         # Build new URL (escaped ':' for properties)
-        new_url = f'{artifactory_base}/libs-release/com/baml/plat/gradle/wrapper/gradle-{version}-all.zip'
+        new_url = f'{artifactory_base}/libs-release/com/baml/plat/gradle/wrapper/gradle-{version}-{dist_type}.zip'
         # Properties file uses escaped colon in some generated files; Gradle supports unescaped https URL too.
         # To preserve style, replace ':' with '\:' if old_url used escapes.
         if '\\:' in old_url:
