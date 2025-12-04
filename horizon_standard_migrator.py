@@ -16,7 +16,6 @@ from wrapper_updater import update_gradle_wrapper
 from gradle_platform_migrator import GradlePlatformMigrator
 import platform
 import re
-from nexus_remover import NexusRemover
 
 VERBOSE = False
 log = logging.getLogger("horizon")
@@ -84,7 +83,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
     if settings:
         clean_res = remove_plasma_nexus_block(settings)
         result['steps'].append({'allprojects_block_removed': clean_res.get('removed', False), 'file': settings, 'removed_bytes': clean_res.get('removed_bytes', 0), 'removed_count': clean_res.get('removed_count', 0)})
-        log.info("Standard Step 2: gradle.allprojects block " + ("removed" if clean_res.get('removed') else "not found"))
+        log.info("Standard Step 1: settings cleanup - gradle.allprojects block " + ("removed" if clean_res.get('removed') else "not found"))
         if VERBOSE and clean_res.get('removed'):
             log.debug(f"removed_count={clean_res.get('removed_count', 0)} removed_bytes={clean_res.get('removed_bytes', 0)}")
 
@@ -101,7 +100,7 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
         else:
             ok = append_repositories_to_settings(settings, artifactory_url)
         result['steps'].append({'settings_updated': ok, 'file': settings})
-        log.info("Standard Step 2: settings.gradle " + ("updated" if ok else "update skipped or already present"))
+        log.info("Standard Step 1: settings.gradle " + ("updated" if ok else "update skipped or already present"))
         if VERBOSE and ok:
             log.debug(f"settings file: {settings}")
     else:
@@ -112,22 +111,32 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
     wrapper = structure.get('gradle_wrapper_properties')
     if wrapper:
         wr = update_gradle_wrapper(wrapper, artifactory_base=artifactory_url)
-        result['steps'].append({'wrapper_updated': wr['success'], 'old_url': wr['old_url'], 'new_url': wr['new_url'], 'file': wrapper})
-        msg = "Standard Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', [])))
+        result['steps'].append({
+            'wrapper_updated': wr['success'],
+            'old_url': wr['old_url'],
+            'new_url': wr['new_url'],
+            'file': wrapper,
+            'network_timeout_added': wr.get('network_timeout_added'),
+            'network_timeout_changed': wr.get('network_timeout_changed'),
+            'network_timeout_prev': wr.get('network_timeout_prev'),
+            'network_timeout_new': wr.get('network_timeout_new')
+        })
+        msg = "Standard Step 2: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', [])))
         (log.info if wr.get('success') else log.error)(msg)
+        if wr.get('enforced_default'):
+            log.info("Standard Step 2: enforcing default Gradle version 6.9.2 for wrapper")
         if VERBOSE and wr.get('success'):
             log.debug(f"old: {wr.get('old_url')} new: {wr.get('new_url')}")
     else:
         result['steps'].append({'wrapper_updated': False, 'error': 'gradle-wrapper.properties not found'})
         log.info("Standard Step 1: distributionUrl update skipped (gradle-wrapper.properties not found)")
 
-    # 3. Remove wrapper block from root build.gradle
+    # 3. Remove wrapper block from root build.gradle (only wrapper block)
     root_build = structure.get('root_build_gradle')
     if root_build:
-        nr = NexusRemover()
-        ok_remove, removed_items = nr.remove_nexus_from_build_gradle(root_build)
-        result['steps'].append({'root_build_wrapper_removed': ok_remove, 'file': root_build, 'removed_items_count': len(removed_items)})
-        log.info("Standard Step 3: root build.gradle wrapper " + ("removed" if ok_remove else "not found"))
+        rem = remove_wrapper_block(root_build)
+        result['steps'].append({'root_build_wrapper_removed': rem.get('removed', False), 'file': root_build, 'removed_bytes': rem.get('removed_bytes', 0), 'removed_count': rem.get('removed_count', 0)})
+        log.info("Standard Step 3: root build.gradle wrapper " + ("removed" if rem.get('removed') else "not found"))
     else:
         result['steps'].append({'root_build_wrapper_removed': False, 'error': 'root build.gradle not found'})
         log.info("Standard Step 3: root build.gradle not found")
@@ -137,7 +146,82 @@ def standard_migration(work_dir: Path, artifactory_url: str) -> dict:
                         all(s.get('root_build_wrapper_removed', True) if 'root_build_wrapper_removed' in s else True for s in result['steps'])
     return result
 
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False) -> dict:
+def remove_wrapper_block(file_path: str) -> dict:
+    res = {'removed': False, 'removed_bytes': 0, 'removed_count': 0}
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            return res
+        content = p.read_text(encoding='utf-8', errors='ignore')
+        pattern = re.compile(r'(?m)^\s*wrapper\s*\{')
+        total_removed = 0
+        removed_any = False
+        pos = 0
+        while True:
+            m = pattern.search(content, pos)
+            if not m:
+                break
+            start_idx = m.start()
+            brace_start = content.find('{', start_idx)
+            if brace_start == -1:
+                pos = m.end()
+                continue
+            depth = 0
+            end_idx = None
+            for i in range(brace_start, len(content)):
+                ch = content[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i
+                        break
+            if end_idx is None:
+                pos = m.end()
+                continue
+            before = len(content)
+            content = content[:start_idx] + content[end_idx+1:]
+            after = len(content)
+            total_removed += (before - after)
+            removed_any = True
+            res['removed_count'] += 1
+            pos = start_idx
+        if removed_any:
+            p.write_text(content, encoding='utf-8')
+            res['removed'] = True
+            res['removed_bytes'] = total_removed
+        return res
+    except Exception as e:
+        res['error'] = str(e)
+        return res
+
+def revert_wrapper_network_timeout(work_dir: Path, info: Optional[dict]) -> None:
+    try:
+        wrapper = work_dir / 'gradle' / 'wrapper' / 'gradle-wrapper.properties'
+        if not wrapper.exists():
+            return
+        text = wrapper.read_text(encoding='utf-8', errors='ignore')
+        if info and info.get('network_timeout_added'):
+            # Remove the line entirely
+            new = re.sub(r'(?m)^\s*networkTimeout\s*=\s*\d+\s*\n?', '', text)
+            if new != text:
+                wrapper.write_text(new, encoding='utf-8')
+            return
+        if info and info.get('network_timeout_changed'):
+            prev = info.get('network_timeout_prev')
+            if prev is not None:
+                new = re.sub(r'(?m)^(\s*networkTimeout\s*=\s*)\d+(\s*)$', rf"\1{prev}\2", text)
+                if new != text:
+                    wrapper.write_text(new, encoding='utf-8')
+                return
+        # Fallback: remove default we may have added
+        new = re.sub(r'(?m)^\s*networkTimeout\s*=\s*600000\s*\n?', '', text)
+        if new != text:
+            wrapper.write_text(new, encoding='utf-8')
+    except Exception:
+        pass
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False, verify_only: bool = False) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     # Rerun support: reuse existing work dir if it already contains a git repo
@@ -155,7 +239,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         out['details'] = {'error': f'branch failed: {b_msg}'}
         log.error("Branch setup failed")
         return out
-    if regen_wrapper:
+    if regen_wrapper and not verify_only:
         rw = regenerate_wrapper_files(work_dir, java_home_override)
         out.setdefault('details', {})['wrapper_regenerated'] = rw.get('success', False)
         if rw.get('success'):
@@ -167,16 +251,27 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     gp.find_all_gradle_files()
     is_platform = gp.detect_gradle_platform()
     libs_toml_exists = (work_dir / 'gradle' / 'libs.versions.toml').exists()
+    if verify_only:
+        # Only run dependency verification and return
+        v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
+        out['details']['verification'] = {'success': v_ok, 'message': v_msg}
+        cleanup_after_verification(work_dir)
+        out['success'] = v_ok
+        return out
     if is_platform:
         log.info("Flow: gradle_platform")
         pm = GradlePlatformMigrator(str(work_dir), verbose=VERBOSE)
         plat = pm.run_gradle_platform_migration()
         out['details'] = plat
-        j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        auto_res = auto_update_jenkinsfiles(work_dir)
+        j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        j_res = update_jenkinsfiles(work_dir, j_list)
         if j_res.get('updated_count', 0) > 0:
             log.info("Gradle Platform: Jenkinsfile(s) updated")
         else:
             log.info("Gradle Platform: Jenkinsfile update skipped")
+        if auto_res.get('updated_count', 0) > 0:
+            log.info("Gradle Platform: auto Jenkinsfile(s) updated")
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
         if not v_ok:
@@ -195,6 +290,9 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         if VERBOSE:
             log.debug(v_msg)
         log.info("Gradle Platform Step 3: dependency verification passed")
+        # Revert temporary networkTimeout change before commit if applied
+        plat_wr = plat.get('wrapper_updated') if isinstance(plat, dict) else None
+        revert_wrapper_network_timeout(work_dir, plat_wr)
         c_ok, c_msg = commit_push(work_dir, commit_message)
         out['success'] = c_ok
         out['details']['commit'] = c_msg
@@ -205,11 +303,15 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         cat = catalog_non_plasma_migration(work_dir)
         out['details'] = cat
         if cat.get('success'):
-            j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+            auto_res = auto_update_jenkinsfiles(work_dir)
+            j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
+            j_res = update_jenkinsfiles(work_dir, j_list)
             if j_res.get('updated_count', 0) > 0:
                 log.info("Version Catalog: Jenkinsfile(s) updated")
             else:
                 log.info("Version Catalog: Jenkinsfile update skipped")
+            if auto_res.get('updated_count', 0) > 0:
+                log.info("Version Catalog: auto Jenkinsfile(s) updated")
             v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
             if not v_ok:
@@ -228,6 +330,22 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if VERBOSE:
                 log.debug(v_msg)
             log.info("Version Catalog Step 3: dependency verification passed")
+            # Revert temporary networkTimeout change before commit if applied
+            try:
+                cat_wr = None
+                steps = out.get('details', {}).get('steps', []) if isinstance(out.get('details'), dict) else []
+                for s in steps:
+                    if 'wrapper_updated' in s and 'file' in s:
+                        cat_wr = {
+                            'network_timeout_added': s.get('network_timeout_added'),
+                            'network_timeout_changed': s.get('network_timeout_changed'),
+                            'network_timeout_prev': s.get('network_timeout_prev'),
+                            'network_timeout_new': s.get('network_timeout_new')
+                        }
+                        break
+                revert_wrapper_network_timeout(work_dir, cat_wr)
+            except Exception:
+                revert_wrapper_network_timeout(work_dir, None)
             c_ok, c_msg = commit_push(work_dir, commit_message)
             out['success'] = c_ok
             out['details']['commit'] = c_msg
@@ -238,11 +356,15 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
     out['details'] = mig
     if mig['success']:
         # Update Jenkinsfile(s) before Gradle invocation
-        j_res = update_jenkinsfiles(work_dir, jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        auto_res = auto_update_jenkinsfiles(work_dir)
+        j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
+        j_res = update_jenkinsfiles(work_dir, j_list)
         if j_res.get('updated_count', 0) > 0:
-            log.info("Standard: Jenkinsfile(s) updated")
+            log.info("Standard Step 3: Jenkinsfile(s) updated")
         else:
-            log.info("Standard: Jenkinsfile update skipped")
+            log.info("Standard Step 3: Jenkinsfile update skipped")
+        if auto_res.get('updated_count', 0) > 0:
+            log.info("Standard Step 3: auto Jenkinsfile(s) updated")
         # Verify dependency resolution before committing
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
@@ -255,16 +377,32 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             if not v2_ok:
                 out['success'] = False
                 out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                log.error("Standard Step 3: dependency verification failed")
-                return out
+            log.error("Standard Step 4: dependency verification failed")
+            return out
         else:
             cleanup_after_verification(work_dir)
         if VERBOSE:
             log.debug(v_msg)
-        log.info("Standard Step 3: dependency verification passed")
+        log.info("Standard Step 4: dependency verification passed")
+        # Revert temporary networkTimeout change before commit if applied
+        try:
+            wr_info = None
+            for s in out.get('details', {}).get('steps', []):
+                if 'wrapper_updated' in s and 'file' in s:
+                    wr_info = {
+                        'network_timeout_added': s.get('network_timeout_added'),
+                        'network_timeout_changed': s.get('network_timeout_changed'),
+                        'network_timeout_prev': s.get('network_timeout_prev'),
+                        'network_timeout_new': s.get('network_timeout_new')
+                    }
+                    break
+            revert_wrapper_network_timeout(work_dir, wr_info)
+        except Exception:
+            revert_wrapper_network_timeout(work_dir, None)
         c_ok, c_msg = commit_push(work_dir, commit_message)
         out['success'] = c_ok
         out['details']['commit'] = c_msg
+        log.info("Standard Step 5: commit " + ("pushed" if c_ok else c_msg))
     return out
 
 def catalog_non_plasma_migration(work_dir: Path) -> dict:
@@ -275,7 +413,16 @@ def catalog_non_plasma_migration(work_dir: Path) -> dict:
         wrapper_path = work_dir / 'gradle' / 'wrapper' / 'gradle-wrapper.properties'
         if wrapper_path.exists():
             wr = update_gradle_wrapper(str(wrapper_path))
-            result['steps'].append({'wrapper_updated': wr.get('success', False), 'old_url': wr.get('old_url'), 'new_url': wr.get('new_url'), 'file': str(wrapper_path)})
+            result['steps'].append({
+                'wrapper_updated': wr.get('success', False),
+                'old_url': wr.get('old_url'),
+                'new_url': wr.get('new_url'),
+                'file': str(wrapper_path),
+                'network_timeout_added': wr.get('network_timeout_added'),
+                'network_timeout_changed': wr.get('network_timeout_changed'),
+                'network_timeout_prev': wr.get('network_timeout_prev'),
+                'network_timeout_new': wr.get('network_timeout_new')
+            })
             msg = "Version Catalog Step 1: distributionUrl " + ("updated" if wr.get('success') else "update failed: " + ", ".join(wr.get('errors', [])))
             (log.info if wr.get('success') else log.error)(msg)
         else:
@@ -739,6 +886,36 @@ def update_jenkinsfiles(work_dir: Path, files: List[str]) -> dict:
         res['error'] = str(e)
         return res
         
+def auto_update_jenkinsfiles(work_dir: Path) -> dict:
+    res = {'updated_count': 0, 'updated_files': [], 'skipped_files': [], 'candidates': []}
+    try:
+        root_candidates = list(Path(work_dir).glob('Jenkinsfile.*.groovy'))
+        jobs_dir = Path(work_dir) / 'jobs'
+        jobs_candidates = list(jobs_dir.glob('Jenkinsfile.*.groovy')) if jobs_dir.exists() else []
+        targets = root_candidates + jobs_candidates
+        res['candidates'] = [str(p) for p in targets]
+        if not targets:
+            return res
+        to_update: List[str] = []
+        for p in targets:
+            try:
+                text = p.read_text(encoding='utf-8', errors='ignore')
+                if ('stageGradlew' in text) or ('gradlew' in text):
+                    to_update.append(str(p.relative_to(work_dir)))
+                else:
+                    res['skipped_files'].append(str(p))
+            except Exception:
+                res['skipped_files'].append(str(p))
+        if to_update:
+            upd = update_jenkinsfiles(work_dir, to_update)
+            res['updated_count'] += upd.get('updated_count', 0)
+            res['updated_files'].extend(upd.get('updated_files', []))
+            res['skipped_files'].extend(upd.get('skipped_files', []))
+        return res
+    except Exception as e:
+        res['error'] = str(e)
+        return res
+
 def remove_plasma_nexus_block(settings_file: str) -> dict:
     """Remove any gradle.allprojects { ... } block from settings.gradle, irrespective of contents.
 
@@ -804,6 +981,7 @@ def main():
     ap.add_argument('--jenkinsfiles', nargs='+', default=['Jenkinsfile.build.groovy'], help='Relative Jenkinsfile paths to update with env.GRADLE_PARAMS')
     ap.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     ap.add_argument('--regen-wrapper', action='store_true', help='Regenerate gradle/wrapper/gradle-wrapper.jar before migration')
+    ap.add_argument('--verify-only', action='store_true', help='Only run dependency verification (retry gradlew) without making changes')
 
     args = ap.parse_args()
     global VERBOSE
@@ -824,7 +1002,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
         use_cache = bool(args.git_file)
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache, bool(args.regen_wrapper)) for r in repos]
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache, bool(args.regen_wrapper), bool(args.verify_only)) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 
