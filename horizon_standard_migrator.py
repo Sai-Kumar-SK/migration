@@ -221,7 +221,7 @@ def revert_wrapper_network_timeout(work_dir: Path, info: Optional[dict]) -> None
             wrapper.write_text(new, encoding='utf-8')
     except Exception:
         pass
-def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False, verify_only: bool = False) -> dict:
+def process_repo(repo_url: str, branch_name: str, commit_message: str, artifactory_url: str, temp_root: Path, java_home_override: Optional[str] = None, jenkinsfiles: Optional[List[str]] = None, use_cache: bool = True, regen_wrapper: bool = False, verify_only: bool = False, keep_verify_artifacts: bool = False) -> dict:
     work_dir = temp_root / f"std_mig_{Path(repo_url).stem}"
     out = {'repo': repo_url, 'success': False, 'details': {}}
     # Rerun support: reuse existing work dir if it already contains a git repo
@@ -255,7 +255,8 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         # Only run dependency verification and return
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
-        cleanup_after_verification(work_dir)
+        if v_ok and not keep_verify_artifacts:
+            cleanup_after_verification(work_dir)
         out['success'] = v_ok
         return out
     if is_platform:
@@ -267,11 +268,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
         j_res = update_jenkinsfiles(work_dir, j_list)
         if j_res.get('updated_count', 0) > 0:
-            log.info("Gradle Platform: Jenkinsfile(s) updated")
+            log.info(f"[{extract_repo_name(repo_url)}] Gradle Platform: Jenkinsfile(s) updated")
         else:
-            log.info("Gradle Platform: Jenkinsfile update skipped")
+            log.info(f"[{extract_repo_name(repo_url)}] Gradle Platform: Jenkinsfile update skipped")
         if auto_res.get('updated_count', 0) > 0:
-            log.info("Gradle Platform: auto Jenkinsfile(s) updated")
+            log.info(f"[{extract_repo_name(repo_url)}] Gradle Platform: auto Jenkinsfile(s) updated")
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
         if not v_ok:
@@ -279,17 +280,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             rw = regenerate_wrapper_files(work_dir, java_home_override)
             v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
-            cleanup_after_verification(work_dir)
+            if v2_ok and not keep_verify_artifacts:
+                cleanup_after_verification(work_dir)
             if not v2_ok:
                 out['success'] = False
                 out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                log.error("Gradle Platform Step 3: dependency verification failed")
+                log.error(f"[{extract_repo_name(repo_url)}] Gradle Platform Step 3: dependency verification failed")
                 return out
         else:
-            cleanup_after_verification(work_dir)
+            if not keep_verify_artifacts:
+                cleanup_after_verification(work_dir)
         if VERBOSE:
             log.debug(v_msg)
-        log.info("Gradle Platform Step 3: dependency verification passed")
+        log.info(f"[{extract_repo_name(repo_url)}] Gradle Platform Step 3: dependency verification passed")
         # Revert temporary networkTimeout change before commit if applied
         plat_wr = plat.get('wrapper_updated') if isinstance(plat, dict) else None
         revert_wrapper_network_timeout(work_dir, plat_wr)
@@ -307,11 +310,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
             j_res = update_jenkinsfiles(work_dir, j_list)
             if j_res.get('updated_count', 0) > 0:
-                log.info("Version Catalog: Jenkinsfile(s) updated")
+                log.info(f"[{extract_repo_name(repo_url)}] Version Catalog: Jenkinsfile(s) updated")
             else:
-                log.info("Version Catalog: Jenkinsfile update skipped")
+                log.info(f"[{extract_repo_name(repo_url)}] Version Catalog: Jenkinsfile update skipped")
             if auto_res.get('updated_count', 0) > 0:
-                log.info("Version Catalog: auto Jenkinsfile(s) updated")
+                log.info(f"[{extract_repo_name(repo_url)}] Version Catalog: auto Jenkinsfile(s) updated")
             v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification'] = {'success': v_ok, 'message': v_msg}
             if not v_ok:
@@ -319,17 +322,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
                 rw = regenerate_wrapper_files(work_dir, java_home_override)
                 v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
                 out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
-                cleanup_after_verification(work_dir)
+                if v2_ok and not keep_verify_artifacts:
+                    cleanup_after_verification(work_dir)
                 if not v2_ok:
                     out['success'] = False
                     out['details']['error'] = 'Dependency resolution failed; not committing changes'
-                    log.error("Version Catalog Step 3: dependency verification failed")
+                    log.error(f"[{extract_repo_name(repo_url)}] Version Catalog Step 3: dependency verification failed")
                     return out
             else:
-                cleanup_after_verification(work_dir)
+                if not keep_verify_artifacts:
+                    cleanup_after_verification(work_dir)
             if VERBOSE:
                 log.debug(v_msg)
-            log.info("Version Catalog Step 3: dependency verification passed")
+            log.info(f"[{extract_repo_name(repo_url)}] Version Catalog Step 3: dependency verification passed")
             # Revert temporary networkTimeout change before commit if applied
             try:
                 cat_wr = None
@@ -360,11 +365,11 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         j_list = (jenkinsfiles or ['Jenkinsfile.build.groovy'])
         j_res = update_jenkinsfiles(work_dir, j_list)
         if j_res.get('updated_count', 0) > 0:
-            log.info("Standard Step 3: Jenkinsfile(s) updated")
+            log.info(f"[{extract_repo_name(repo_url)}] Standard Step 3: Jenkinsfile(s) updated")
         else:
-            log.info("Standard Step 3: Jenkinsfile update skipped")
+            log.info(f"[{extract_repo_name(repo_url)}] Standard Step 3: Jenkinsfile update skipped")
         if auto_res.get('updated_count', 0) > 0:
-            log.info("Standard Step 3: auto Jenkinsfile(s) updated")
+            log.info(f"[{extract_repo_name(repo_url)}] Standard Step 3: auto Jenkinsfile(s) updated")
         # Verify dependency resolution before committing
         v_ok, v_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
         out['details']['verification'] = {'success': v_ok, 'message': v_msg}
@@ -373,17 +378,19 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
             rw = regenerate_wrapper_files(work_dir, java_home_override)
             v2_ok, v2_msg = verify_dependency_resolution(work_dir, repo_url, java_home_override, use_cache)
             out['details']['verification_retry'] = {'success': v2_ok, 'message': v2_msg}
-            cleanup_after_verification(work_dir)
+            if v2_ok and not keep_verify_artifacts:
+                cleanup_after_verification(work_dir)
             if not v2_ok:
                 out['success'] = False
                 out['details']['error'] = 'Dependency resolution failed; not committing changes'
-            log.error("Standard Step 4: dependency verification failed")
+            log.error(f"[{extract_repo_name(repo_url)}] Standard Step 4: dependency verification failed")
             return out
         else:
-            cleanup_after_verification(work_dir)
+            if not keep_verify_artifacts:
+                cleanup_after_verification(work_dir)
         if VERBOSE:
             log.debug(v_msg)
-        log.info("Standard Step 4: dependency verification passed")
+        log.info(f"[{extract_repo_name(repo_url)}] Standard Step 4: dependency verification passed")
         # Revert temporary networkTimeout change before commit if applied
         try:
             wr_info = None
@@ -402,7 +409,7 @@ def process_repo(repo_url: str, branch_name: str, commit_message: str, artifacto
         c_ok, c_msg = commit_push(work_dir, commit_message)
         out['success'] = c_ok
         out['details']['commit'] = c_msg
-        log.info("Standard Step 5: commit " + ("pushed" if c_ok else c_msg))
+        log.info(f"[{extract_repo_name(repo_url)}] Standard Step 5: commit " + ("pushed" if c_ok else c_msg))
     return out
 
 def catalog_non_plasma_migration(work_dir: Path) -> dict:
@@ -982,6 +989,7 @@ def main():
     ap.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     ap.add_argument('--regen-wrapper', action='store_true', help='Regenerate gradle/wrapper/gradle-wrapper.jar before migration')
     ap.add_argument('--verify-only', action='store_true', help='Only run dependency verification (retry gradlew) without making changes')
+    ap.add_argument('--keep-verify-artifacts-on-success', action='store_true', help='Keep verification artifacts (init script, gradle-user-home) even on success')
 
     args = ap.parse_args()
     global VERBOSE
@@ -1002,7 +1010,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
         use_cache = bool(args.git_file)
-        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache, bool(args.regen_wrapper), bool(args.verify_only)) for r in repos]
+        futs = [ex.submit(process_repo, r, args.branch_name, args.commit_message, args.artifactory_url, temp_root, args.java_home_override, args.jenkinsfiles, use_cache, bool(args.regen_wrapper), bool(args.verify_only), bool(args.keep_verify_artifacts_on_success)) for r in repos]
         for f in as_completed(futs):
             results.append(f.result())
 
