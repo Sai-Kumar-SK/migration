@@ -18,8 +18,9 @@ class TestWrapperUpdater(unittest.TestCase):
             res = update_gradle_wrapper(str(props), 'https://artifactory.org.com/artifactory')
             self.assertTrue(res['success'])
             content = props.read_text(encoding='utf-8')
-            self.assertIn('gradle-6.8.3-all.zip', content)
+            self.assertIn('gradle-6.9.2-all.zip', content)
             self.assertIn('https\://artifactory.org.com/artifactory/libs-release/com/baml/plat/gradle/wrapper', content)
+            self.assertIn('networkTimeout=600000', content)
 
     def test_update_without_version_extraction(self):
         with tempfile.TemporaryDirectory() as tmp:

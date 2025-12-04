@@ -211,7 +211,9 @@ def revert_wrapper_network_timeout(work_dir: Path, info: Optional[dict]) -> None
         if info and info.get('network_timeout_changed'):
             prev = info.get('network_timeout_prev')
             if prev is not None:
-                new = re.sub(r'(?m)^(\s*networkTimeout\s*=\s*)\d+(\s*)$', rf"\1{prev}\2", text)
+                def _repl(m):
+                    return f"{m.group(1)}{prev}{m.group(2)}"
+                new = re.sub(r'(?m)^(\s*networkTimeout\s*=\s*)\d+(\s*)$', _repl, text)
                 if new != text:
                     wrapper.write_text(new, encoding='utf-8')
                 return

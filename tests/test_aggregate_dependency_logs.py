@@ -11,14 +11,14 @@ class TestAggregateDependencyLogs(unittest.TestCase):
             log2 = tmpdir / 'dependency-resolution-repoB.log'
             content1 = (
                 "******************** repoA DEPENDENCY RESOLUTION ***********************\n"
-                "Could not resolve org.apache.commons:commons-text:1.10.0\n"
-                "Could not find com.example:missing-lib:0.1.0\n"
+                "UNRESOLVED | x | y | org.apache.commons:commons-text:1.10.0 | reason\n"
+                "UNRESOLVED | x | y | com.example:missing-lib:0.1.0 | reason\n"
                 "**************END*******************\n"
             )
             content2 = (
                 "******************** repoB DEPENDENCY RESOLUTION ***********************\n"
-                "Could not resolve org.apache.commons:commons-text:1.9.0\n"
-                "Could not resolve com.example:missing-lib:0.1.0\n"
+                "UNRESOLVED | x | y | org.apache.commons:commons-text:1.9.0 | reason\n"
+                "UNRESOLVED | x | y | com.example:missing-lib:0.1.0 | reason\n"
                 "**************END*******************\n"
             )
             log1.write_text(content1, encoding='utf-8')
@@ -46,8 +46,8 @@ class TestAggregateDependencyLogs(unittest.TestCase):
             log3 = tmpdir / 'dependency-resolution-repoC.log'
             content3 = (
                 "******************** repoC DEPENDENCY RESOLUTION ***********************\n"
-                "Could not resolve org.apache.commons:commons-text:1.10.0\n"
-                "Could not resolve org.slf4j:slf4j-api:2.0.12\n"
+                "UNRESOLVED | x | y | org.apache.commons:commons-text:1.10.0 | reason\n"
+                "UNRESOLVED | x | y | org.slf4j:slf4j-api:2.0.12 | reason\n"
                 "**************END*******************\n"
             )
             log3.write_text(content3, encoding='utf-8')

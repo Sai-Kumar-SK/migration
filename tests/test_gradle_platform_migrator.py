@@ -37,7 +37,49 @@ class TestGradlePlatformMigrator(unittest.TestCase):
             (root / 'buildSrc' / 'settings.gradle').write_text('rootProject.name="buildSrc"')
             migrator = GradlePlatformMigrator(str(root))
             res = migrator.check_buildsrc_settings_gradle()
-            self.assertTrue(res['exists'])
+        self.assertTrue(res['exists'])
+
+    def test_libs_versions_handle_both_nexus_and_artifactory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'gradle').mkdir(parents=True, exist_ok=True)
+            libs = (root / 'gradle' / 'libs.versions.toml')
+            libs.write_text('[versions]\nplasmaGradlePlugins="1.0.0"\n[libraries]\n' \
+                            + 'plugin-repositories-artifactory = { module = "ops.plasma.repositories-artifactory:ops.plasma.repositories-artifactory.gradle.plugin", version.ref = "plasmaGradlePlugins" }\n' \
+                            + 'plugin-repositories-nexus = { module = "ops.plasma.repositories-nexus:ops.plasma.repositories-nexus.gradle.plugin", version.ref = "plasmaGradlePlugins" }\n',
+                            encoding='utf-8')
+            migrator = GradlePlatformMigrator(str(root))
+            res = migrator.update_libs_versions_toml()
+            self.assertTrue(res['success'])
+            txt = libs.read_text(encoding='utf-8')
+            self.assertIn('plugin-repositories-artifactory', txt)
+            self.assertNotIn('plugin-repositories-nexus', txt)
+
+    def test_libs_versions_only_artifactory_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'gradle').mkdir(parents=True, exist_ok=True)
+            libs = (root / 'gradle' / 'libs.versions.toml')
+            libs.write_text('[versions]\nplasmaGradlePlugins="1.0.0"\n[libraries]\n' \
+                            + 'plugin-repositories-artifactory = { module = "ops.plasma.repositories-artifactory:ops.plasma.repositories-artifactory.gradle.plugin", version.ref = "plasmaGradlePlugins" }\n',
+                            encoding='utf-8')
+            migrator = GradlePlatformMigrator(str(root))
+            res = migrator.update_libs_versions_toml()
+            self.assertTrue(res['success'])
+            self.assertIn('Artifactory plugin already present', res.get('message',''))
+            txt = libs.read_text(encoding='utf-8')
+            self.assertIn('plugin-repositories-artifactory', txt)
+
+    def test_libs_versions_none_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'gradle').mkdir(parents=True, exist_ok=True)
+            libs = (root / 'gradle' / 'libs.versions.toml')
+            libs.write_text('[versions]\nplasmaGradlePlugins="1.0.0"\n[libraries]\n', encoding='utf-8')
+            migrator = GradlePlatformMigrator(str(root))
+            res = migrator.update_libs_versions_toml()
+            self.assertTrue(res['success'])
+            self.assertIn('No plugin repositories entries', res.get('message',''))
 
 if __name__ == '__main__':
     unittest.main()

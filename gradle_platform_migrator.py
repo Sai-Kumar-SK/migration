@@ -19,7 +19,13 @@ class GradlePlatformMigrator:
         self.root_settings_gradle = self.project_root / "settings.gradle"
         
     def update_libs_versions_toml(self) -> Dict:
-        """Replace repositories-nexus plugin with repositories-artifactory if present."""
+        """Ensure only repositories-artifactory plugin exists in [libraries].
+
+        - If both Nexus and Artifactory entries exist: remove Nexus.
+        - If only Nexus exists: replace with Artifactory.
+        - If only Artifactory exists: skip.
+        - If none exist: note that no plugin entries were found.
+        """
         result = {
             'success': False,
             'file_path': str(self.libs_versions_toml),
@@ -45,18 +51,33 @@ class GradlePlatformMigrator:
                 return result
             
             libraries_section = libraries_section_match.group(1)
-            # Replace repositories-nexus entry only if present
+            # Detect existing plugin entries
             nexus_key = 'plugin-repositories-nexus'
             art_key = 'plugin-repositories-artifactory'
             nexus_module = 'ops.plasma.repositories-nexus:ops.plasma.repositories-nexus.gradle.plugin'
             art_module = 'ops.plasma.repositories-artifactory:ops.plasma.repositories-artifactory.gradle.plugin'
-            pattern = rf'{re.escape(nexus_key)}\s*=\s*\{{\s*module\s*=\s*["\']{re.escape(nexus_module)}["\']\s*,\s*version\.ref\s*=\s*["\']plasmaGradlePlugins["\']\s*\}}'
-            pattern_alt = rf'{re.escape(nexus_key)}\s*=\s*\{{\s*module\s*=\s*["\']{re.escape(nexus_module)}["\']\s*,\s*versions\.ref\s*=\s*["\']plasmaGradlePlugins["\']\s*\}}'
-            if re.search(pattern, libraries_section) or re.search(pattern_alt, libraries_section):
-                libraries_section = re.sub(pattern, f'{art_key} = {{ module = "{art_module}", version.ref = "plasmaGradlePlugins" }}', libraries_section)
-                libraries_section = re.sub(pattern_alt, f'{art_key} = {{ module = "{art_module}", versions.ref = "plasmaGradlePlugins" }}', libraries_section)
+            nexus_entry_re = re.compile(rf'(?m)^\s*{re.escape(nexus_key)}\s*=\s*\{{[^}}]*\}}\s*$', re.DOTALL)
+            art_entry_re = re.compile(rf'(?m)^\s*{re.escape(art_key)}\s*=\s*\{{[^}}]*\}}\s*$', re.DOTALL)
+
+            has_nexus = nexus_entry_re.search(libraries_section) is not None
+            has_art = art_entry_re.search(libraries_section) is not None
+
+            if has_nexus and has_art:
+                # Remove nexus entry, keep artifactory
+                libraries_section = nexus_entry_re.sub('', libraries_section)
+                result['changes_made'] = True
+                result['message'] = 'Removed Nexus plugin; Artifactory already present'
+            elif has_nexus and not has_art:
+                # Replace nexus with artifactory entry
+                # Use version.ref by default for consistency
+                libraries_section = nexus_entry_re.sub(f'{art_key} = {{ module = "{art_module}", version.ref = "plasmaGradlePlugins" }}', libraries_section)
                 result['replaced'] = True
                 result['changes_made'] = True
+                result['message'] = 'Replaced Nexus plugin with Artifactory plugin'
+            elif not has_nexus and has_art:
+                result['message'] = 'Artifactory plugin already present; no changes'
+            else:
+                result['message'] = 'No plugin repositories entries found in [libraries]'
 
             # Update the content
             if result['changes_made']:
@@ -69,9 +90,9 @@ class GradlePlatformMigrator:
                     f.write(new_content)
                 
                 result['success'] = True
-                result['message'] = "libs.versions.toml updated successfully"
+                result['message'] = result.get('message') or "libs.versions.toml updated successfully"
             else:
-                result['message'] = "No changes needed in libs.versions.toml"
+                result['message'] = result.get('message') or "No changes needed in libs.versions.toml"
                 result['success'] = True
             
         except Exception as e:
